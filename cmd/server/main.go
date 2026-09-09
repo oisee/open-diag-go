@@ -1629,15 +1629,43 @@ const ledRamp = " .:iclosnuaewmyqpdbkhOQMWNB"
 // ledSpectrum is the vivid list colours ordered as a spectrum.
 var ledSpectrum = []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.ColTotal, diag.ColGroup, diag.ColNegative}
 
-// ledCell is the colour and density glyph for one LED cell: hue from one plasma
-// field mapped to the spectrum, luminance from another mapped to the letter ramp.
-func ledCell(r, c int, t float64) (byte, byte) {
-	fr, fc := float64(r), float64(c)
-	hv := (math.Sin(fc/3.0+t) + math.Sin(fr/2.0-t) + math.Sin((fc+fr)/4.0+t*1.3) + 3.0) / 6.0
-	lv := (math.Sin(fc/2.5-t*0.7) + math.Cos(fr/3.0+t*0.9) + 2.0) / 4.0
-	gi := clampi(int(hv*float64(len(ledSpectrum))), 0, len(ledSpectrum)-1)
-	di := clampi(int(lv*float64(len(ledRamp))), 0, len(ledRamp)-1)
-	return ledSpectrum[gi], ledRamp[di]
+// The LED grid is LOGICAL: ledRows x ledCols cells, each drawn as a bw x bh
+// block of character cells (§ ledSegments), so the display is big and chunky
+// while the run count stays tied to this logical resolution.
+const ledRows, ledCols = 16, 52
+
+var ledEffects = []string{"plasma", "rings", "ball"}
+
+// ledCell is the colour and density glyph for one logical LED, for the current
+// effect. Every effect returns smooth regions so the per-row RLE stays tight.
+func ledCell(lr, lc int, t float64, eff int) (byte, byte) {
+	switch eff {
+	case 1: // concentric rings breathing out from the centre
+		cx, cy := float64(ledCols)/2, float64(ledRows)/2
+		d := math.Hypot(float64(lc)-cx, (float64(lr)-cy)*2)
+		v := (math.Sin(d/2.2-t*2.0) + 1.0) / 2.0
+		gi := clampi(int(v*float64(len(ledSpectrum))), 0, len(ledSpectrum)-1)
+		di := clampi(int(v*float64(len(ledRamp))), 0, len(ledRamp)-1)
+		return ledSpectrum[gi], ledRamp[di]
+	case 2: // a bright ball bouncing on a dark field
+		bx := triangle(t*9.0, ledCols-1)
+		by := triangle(t*5.0, ledRows-1)
+		d := math.Hypot(float64(lc-bx), float64(lr-by)*2)
+		if d < 2.5 {
+			return diag.ColNegative, ledRamp[len(ledRamp)-1] // solid ball
+		}
+		if d < 5.0 {
+			return diag.ColTotal, ledRamp[len(ledRamp)/2] // halo
+		}
+		return diag.ColKey, ledRamp[0] // dark background (space)
+	default: // plasma: hue and luminance from two sine fields
+		fr, fc := float64(lr), float64(lc)
+		hv := (math.Sin(fc/3.0+t) + math.Sin(fr/2.0-t) + math.Sin((fc+fr)/4.0+t*1.3) + 3.0) / 6.0
+		lv := (math.Sin(fc/2.5-t*0.7) + math.Cos(fr/3.0+t*0.9) + 2.0) / 4.0
+		gi := clampi(int(hv*float64(len(ledSpectrum))), 0, len(ledSpectrum)-1)
+		di := clampi(int(lv*float64(len(ledRamp))), 0, len(ledRamp)-1)
+		return ledSpectrum[gi], ledRamp[di]
+	}
 }
 
 func clampi(v, lo, hi int) int {
@@ -1650,40 +1678,32 @@ func clampi(v, lo, hi int) int {
 	return v
 }
 
-// ledSegments is one frame of an LED plasma in the list channel, **run-length
-// encoded per row**: adjacent cells that share a colour and letter collapse into
-// one list run, so a big grid still fits in few segments (the list channel
-// stalls on hundreds of runs). The plasma is smooth, so each row compresses to a
-// handful of runs — that is what lets the display be this large without hanging.
+// ledSegments is one frame of the LED display, **run-length encoded per row**:
+// adjacent cells sharing a colour and letter collapse into one list run, so the
+// big grid stays a few segments (the list channel stalls on hundreds). Each
+// logical LED is drawn as a bw x bh character block; the effect cycles every
+// few seconds among plasma, rings and a bouncing ball.
 func ledSegments(n int) []diag.ListSegment {
-	// The LED grid is LOGICAL: lrows x lcols cells. Each is drawn as a bw x bh
-	// block of character cells, so the display is big and chunky while the run
-	// count stays tied to the logical resolution — horizontal doubling is just a
-	// longer run (free to RLE), vertical doubling repeats the row. bw=4,bh=2
-	// makes a roughly square LED (a char cell is about half as wide as tall).
-	const lrows, lcols = 10, 22
-	const bw, bh = 4, 2
+	const bw, bh = 2, 2
+	eff := (n / 45) % len(ledEffects) // ~8s per effect at the led cadence
 	segs := []diag.ListSegment{
-		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED plasma: colour + letters (RLE, 2x blocks)"),
+		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED display: colour + letters (RLE)"),
 	}
 	t := float64(n) * 0.15
-	for lr := 0; lr < lrows; lr++ {
-		// Run-length encode the logical row: coalesce adjacent LEDs of the same
-		// colour and letter.
+	for lr := 0; lr < ledRows; lr++ {
 		type run struct {
 			startLC, wLC int
 			col, ch      byte
 		}
 		var runs []run
-		for lc := 0; lc < lcols; lc++ {
-			col, ch := ledCell(lr, lc, t)
+		for lc := 0; lc < ledCols; lc++ {
+			col, ch := ledCell(lr, lc, t, eff)
 			if k := len(runs) - 1; k >= 0 && runs[k].col == col && runs[k].ch == ch {
 				runs[k].wLC++
 			} else {
 				runs = append(runs, run{lc, 1, col, ch})
 			}
 		}
-		// Emit the row bh times (vertical doubling); each run scaled by bw.
 		for b := 0; b < bh; b++ {
 			sr := 2 + lr*bh + b
 			for _, rn := range runs {
@@ -1692,8 +1712,8 @@ func ledSegments(n int) []diag.ListSegment {
 			}
 		}
 	}
-	segs = append(segs, diag.ListText(2+lrows*bh+1, 2, diag.ColNormal,
-		fmt.Sprintf("frame %d   %dx%d LEDs as %dx%d blocks, RLE   F3/Back stops", n, lrows, lcols, bw, bh)))
+	segs = append(segs, diag.ListText(2+ledRows*bh+1, 2, diag.ColNormal,
+		fmt.Sprintf("frame %d   %s   %dx%d LEDs   F3/Back stops", n, ledEffects[eff], ledRows, ledCols)))
 	return segs
 }
 
