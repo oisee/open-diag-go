@@ -1619,52 +1619,73 @@ func ledRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte {
 	return listPushRenderer(wrap, log, ledSegments)
 }
 
-// bayer is a 4x4 ordered-dither threshold matrix (0..15): it mixes two
-// neighbouring colours across cells so the eye blends them into a shade
-// between — spatial colour mixing without a per-pixel colour.
-var bayer = [4][4]float64{
-	{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5},
+// ledRamp is the ASCII density ramp, light to dark, made of LETTERS (plus a
+// space and two dots for the lightest steps) — letters give smoother tonal
+// transitions than punctuation. The run's colour is the cell background and the
+// glyph is dark foreground, so a denser letter darkens the cell: a halftone
+// within the hue.
+const ledRamp = " .:iclosnuaewmyqpdbkhOQMWNB"
+
+// ledSpectrum is the vivid list colours ordered as a spectrum.
+var ledSpectrum = []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.ColTotal, diag.ColGroup, diag.ColNegative}
+
+// ledCell is the colour and density glyph for one LED cell: hue from one plasma
+// field mapped to the spectrum, luminance from another mapped to the letter ramp.
+func ledCell(r, c int, t float64) (byte, byte) {
+	fr, fc := float64(r), float64(c)
+	hv := (math.Sin(fc/3.0+t) + math.Sin(fr/2.0-t) + math.Sin((fc+fr)/4.0+t*1.3) + 3.0) / 6.0
+	lv := (math.Sin(fc/2.5-t*0.7) + math.Cos(fr/3.0+t*0.9) + 2.0) / 4.0
+	gi := clampi(int(hv*float64(len(ledSpectrum))), 0, len(ledSpectrum)-1)
+	di := clampi(int(lv*float64(len(ledRamp))), 0, len(ledRamp)-1)
+	return ledSpectrum[gi], ledRamp[di]
 }
 
-// ledSegments is one frame of an LED plasma in the list channel: the hue comes
-// from the run's SFE colour (dithered between spectrum stops for smooth mixing),
-// the luminance from an ASCII density character filling the cell (the colour is
-// the background, the glyph is dark foreground, so a denser glyph darkens the
-// cell — a halftone within the hue). Colour + ASCII, the classic list as a
-// dithered LED display.
+func clampi(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// ledSegments is one frame of an LED plasma in the list channel, **run-length
+// encoded per row**: adjacent cells that share a colour and letter collapse into
+// one list run, so a big grid still fits in few segments (the list channel
+// stalls on hundreds of runs). The plasma is smooth, so each row compresses to a
+// handful of runs — that is what lets the display be this large without hanging.
 func ledSegments(n int) []diag.ListSegment {
-	const rows, cols, cw = 10, 18, 3
-	// The vivid list colours ordered as a spectrum.
-	grad := []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.ColTotal, diag.ColGroup, diag.ColNegative}
-	const ramp = " .:-=+*#%@" // light -> dense (darker)
+	const rows, cols, cw = 20, 32, 2
 	segs := []diag.ListSegment{
-		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED plasma: colour + ASCII halftone"),
+		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED plasma: colour + letters (RLE)"),
 	}
 	t := float64(n) * 0.15
 	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			fr, fc := float64(r), float64(c)
-			hv := (math.Sin(fc/3.0+t) + math.Sin(fr/2.0-t) + math.Sin((fc+fr)/4.0+t*1.3) + 3.0) / 6.0
-			lv := (math.Sin(fc/2.5-t*0.7) + math.Cos(fr/3.0+t*0.9) + 2.0) / 4.0
-			// Hue: pick the gradient stop, dither to the next by the fraction.
-			gp := hv * float64(len(grad)-1)
-			gi := int(gp)
-			col := grad[gi]
-			if gi+1 < len(grad) && gp-float64(gi) > (bayer[r%4][c%4]+0.5)/16.0 {
-				col = grad[gi+1]
+		startCol, runW := 0, 0
+		var runCol, runCh byte
+		flush := func() {
+			if runW > 0 {
+				segs = append(segs, diag.ListText(2+r, 2+startCol*cw, runCol,
+					strings.Repeat(string(runCh), runW*cw)))
 			}
-			// Luminance: density char fills the cell.
-			di := int(lv * float64(len(ramp)-1))
-			if di < 0 {
-				di = 0
-			} else if di >= len(ramp) {
-				di = len(ramp) - 1
-			}
-			segs = append(segs, diag.ListText(2+r, 2+c*cw, col, strings.Repeat(ramp[di:di+1], cw)))
 		}
+		for c := 0; c < cols; c++ {
+			col, ch := ledCell(r, c, t)
+			switch {
+			case runW == 0:
+				startCol, runW, runCol, runCh = c, 1, col, ch
+			case col == runCol && ch == runCh:
+				runW++
+			default:
+				flush()
+				startCol, runW, runCol, runCh = c, 1, col, ch
+			}
+		}
+		flush()
 	}
 	segs = append(segs, diag.ListText(2+rows+1, 2, diag.ColNormal,
-		fmt.Sprintf("frame %d   %dx%d  dithered hue + halftone   F3/Back stops", n, rows, cols)))
+		fmt.Sprintf("frame %d   %dx%d  hue + letters, RLE   F3/Back stops", n, rows, cols)))
 	return segs
 }
 
