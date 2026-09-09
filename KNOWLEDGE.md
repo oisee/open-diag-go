@@ -138,23 +138,51 @@ Entry layout (confirmed across .01/.02, one entry):
 ```
 
 - `pos` `(menu#, item#)` places the entry in the hierarchy; `pos-repeat`
-  echoes it.
-- `type/code` is `16 00` for a menu-bar title; for menu items it varies
-  (`Log on` 02 64, `New password` 12 05, `Log off` 12 0f) — the low byte looks
-  like the item's function number (New password 0x05, Log off 0x0f), the high
-  byte a flag. **Open question:** the exact function-code encoding and what the
-  client sends when the item is chosen — needs one targeted sniff (pick a menu
-  item, read the resulting OK-code).
-- the trailing single letter is the Alt-accelerator (`U`ser, `N`ew password).
+  echoes it in .01/.02, or holds `[fcode-number][00]` in the flat .03/.04.
+- `type/code` = `[flag byte][fcode-number]`. **Low byte = the function number**,
+  a small integer that is the *join key* across .02/.03/.04 — or the sentinel
+  `0x64` (100) for a menu-only item with no toolbar/key binding. **High byte =
+  a flag bitfield**: `0x16` menu-bar title, `0x08` separator, `0x02` enabled
+  leaf, `0x12` enabled + bound to an F-key/toolbar slot (bit `0x10` = "has a
+  binding"). The doubled code in .03/.04 (`05 05`, `0f 0f`) is not a separate
+  rule — the number sits in `type/code` low byte and `pos-repeat` high byte,
+  and in the flat lists those two land adjacent.
+- the trailing single letter is the **Alt-accelerator** (the mnemonic to open
+  the menu), unrelated to the fcode-number.
 
-`.03`/`.04` reuse the same shell with the code doubled (`New password` → `05 05`,
-`Log off` → `0f 0f`) and a tooltip/label after the text.
+`.03` (toolbar): `pos.byte0` = toolbar slot; text = `@icon@ caption \0\0 tooltip`.
+`.04` (function keys): `pos.byte0` = entry index; **the fcode-number IS the SAP
+virtual key code** — `0x01` F1 (Help), `0x02` F2 (Choose), `0x03` F3 (Back),
+`0x04` F4, `0x0b` F11 (Save), `0x0c` F12 (Cancel); numbers `> 0x0c` are the
+Shift/Ctrl-F variants; text = the label.
+
+**How a function reaches the server (confirmed):** the client always sends the
+chosen function as an **ASCII `=STRING` in the OK-code** (VARINFO id 0x0c sid
+0x04) — never a number. For **dynpro elements** that string is carried *inline
+in the atom*: a pushbutton atom's `Function` field is `"=SHOP"`, so a
+synthesized pushbutton sends its own code on click with no MNUENTRY at all
+(this is how the `snake` game's buttons work). Tabstrip tabs are the same,
+in the newly-named sub-streams `DYNT.TABSTRIP_DEF` (0x09/0x0f) and
+`DYNT.TABSTRIP_TAB` (0x09/0x10). **MNUENTRY carries only numbers + labels, no
+strings, and there is no number→string table on the wire.**
+
+**Open gap:** the capture never fired a *pure* MNUENTRY function (no dropdown
+item, toolbar button, or bare function key was pressed), so how a menu/key
+*number* becomes the `=STRING` the client sends is unproven. One targeted sniff
+settles it: on a status-mapped screen, click a dropdown item or press F11, then
+read VARINFO.04.
+
+**What we can synthesize:**
+- **Pointer-driven (pushbuttons, tabs) — today.** The fcode string is
+  self-contained in the atom; already built (`dynt_encode.go`). Games can be
+  driven by synthesized buttons now.
+- **Keyboard (F-keys) — after the one sniff.** A synthesized `MNUENTRY.04`
+  entry with a key's number will make the GUI fire a PAI on that key, but the
+  OK-code string it then sends is unconfirmed until the sniff above.
 
 **Reuse works today:** splicing our fields DYNT_ATOM into a captured logon frame
 inherits its real MNUENTRY, so the menu bar, `New password` and status are
-genuine (`server` login scene). **Synthesis** (a Go DSL that builds MNUENTRY from
-a description — menu bar, dropdowns, context menus, toolbar, keys) is the next
-build; it unlocks keyboard control for games and fully native custom screens.
+genuine (`server` login scene).
 
 ## 9. Animation & pacing
 
