@@ -86,6 +86,14 @@ func main() {
 		if *mode == "widgets" && *pushMS == 300 {
 			cad = 60 * time.Millisecond // light frames, so a brisker default
 		}
+		if *mode == "iconanim" {
+			if *pushMS == 300 {
+				cad = 150 * time.Millisecond // gentle default: pushing a list is unproven
+			}
+			if cad < 80*time.Millisecond {
+				cad = 80 * time.Millisecond
+			}
+		}
 		go serve(ctx, c, cap, *mode, *menuAt, *screenFrame, *pushFrame, cad, msgByte(*msgType), *msgLoop)
 	}
 }
@@ -237,7 +245,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	st := &appState{}
 	popup := replay.FindPopup(capturePath)
 	var listWrap []byte
-	if mode == "colorlist" {
+	if mode == "colorlist" || mode == "iconanim" {
 		listWrap = replay.FindListWrap(capturePath)
 		if listWrap != nil {
 			log("plain list wrapper located in the capture")
@@ -369,7 +377,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist" || mode == "widgets" || mode == "demo") && pushing == nil {
+			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist" || mode == "widgets" || mode == "demo" || mode == "iconanim") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, listWrap, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -391,7 +399,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "anim" || mode == "widgets" || mode == "demo" || animOn) && pushing != nil {
+			if (mode == "anim" || mode == "widgets" || mode == "demo" || mode == "iconanim" || animOn) && pushing != nil {
 				// While animating, any client frame is the user pressing a
 				// key (F3, Back, Enter): stop the animation and freeze the
 				// last frame. A window-close was handled just above.
@@ -399,11 +407,16 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				pushing = nil
 				animOn = false
 				log("animation stopped by the user")
-				frozen := frame.New(27, 120).
-					Text(1, 2, "animation stopped").
-					Text(3, 2, "close the window to exit")
-				if out := staticRespondWrap(cap, screenFrame, frozen); out != nil {
-					_ = send("animation stopped", out)
+				// The dynpro modes swap in a "stopped" screen; the list-channel
+				// icon animation stays on its list frame instead of switching
+				// channels, so it just freezes on the last frame it pushed.
+				if mode != "iconanim" {
+					frozen := frame.New(27, 120).
+						Text(1, 2, "animation stopped").
+						Text(3, 2, "close the window to exit")
+					if out := staticRespondWrap(cap, screenFrame, frozen); out != nil {
+						_ = send("animation stopped", out)
+					}
 				}
 				continue
 			}
@@ -1107,6 +1120,92 @@ func colorlistRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte
 	return func(int) []byte { return payload }
 }
 
+// iconAnimSegments is one frame of the icon animation, built from the list
+// primitives: a scanner of LEDs sweeping back and forth, a traffic light that
+// cycles green-yellow-red on the spot, and a red light bouncing round a box.
+// Every glyph is a "@XX@" token in a coloured run placed by (row, col) — a
+// moving picture drawn entirely in the list channel.
+func iconAnimSegments(n int) []diag.ListSegment {
+	var segs []diag.ListSegment
+	segs = append(segs, diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  animated icons in the list channel"))
+
+	// A KITT scanner: a green LED head with a two-step yellow trail, sweeping a
+	// track and bouncing at the ends. Only the lit cells are drawn.
+	const track = 22
+	pos := triangle(float64(n), track-1)
+	for k := 0; k < 3; k++ {
+		i := pos - k
+		if i < 0 || i >= track {
+			continue
+		}
+		icon := diag.IconYellowLight
+		if k == 0 {
+			icon = diag.IconLEDGreen
+		}
+		segs = append(segs, diag.ListIcon(2, 6+i*2, icon))
+	}
+	segs = append(segs, diag.ListText(3, 6, diag.ColNormal, "scanner (LED head, yellow trail)"))
+
+	// A traffic light cycling on the spot: one lamp lit at a time.
+	lights := []string{diag.IconGreenLight, diag.IconYellowLight, diag.IconRedLight}
+	segs = append(segs,
+		diag.ListText(5, 6, diag.ColNormal, "cycle:"),
+		diag.ListIcon(5, 14, lights[(n/6)%3]))
+
+	// A red light bouncing round a box, so motion runs in two dimensions.
+	const bw, bh = 30, 8
+	bx := triangle(float64(n)*1.3, bw)
+	by := triangle(float64(n)*0.7, bh)
+	segs = append(segs, diag.ListIcon(7+by, 40+bx, diag.IconRedLight))
+
+	segs = append(segs, diag.ListText(18, 2, diag.ColNormal,
+		fmt.Sprintf("frame %d   F3/Back stops   (list-channel push test)", n)))
+	return segs
+}
+
+// iconanimRenderer splices a fresh icon-animation list into the captured list
+// wrapper each frame — the same splice colorlistRenderer does, but rebuilt per
+// tick so the icons move. This is the experiment: whether the GUI's list
+// processor accepts a server pushing new list frames on a timer.
+func iconanimRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte {
+	if wrap == nil {
+		log("no plain list frame in the capture to wrap")
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(wrap, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	var keep []diag.Item
+	insertAt := -1
+	for _, it := range items {
+		isList := it.Type == diag.ItemSBA || it.Type == diag.ItemSFE || it.Type == diag.ItemSLC ||
+			(it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x0b)
+		if isList {
+			if insertAt < 0 {
+				insertAt = len(keep)
+			}
+			continue
+		}
+		keep = append(keep, it)
+	}
+	if insertAt < 0 {
+		insertAt = len(keep)
+	}
+	h := m.Header
+	h.Compress = 0
+	return func(n int) []byte {
+		mine := diag.EncodeListItems(iconAnimSegments(n))
+		final := append(append(append([]diag.Item{}, keep[:insertAt]...), mine...), keep[insertAt:]...)
+		payload, err := diag.EncodeMessage(h, final, false)
+		if err != nil {
+			return nil
+		}
+		return payload
+	}
+}
+
 // staticScreen builds the screen for a static demo mode.
 func staticScreen(mode string) *frame.Screen {
 	switch mode {
@@ -1314,6 +1413,8 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, list
 		return widgetsRenderer(cap, screenFrame, log)
 	case "demo":
 		return demoRenderer(cap, screenFrame, log)
+	case "iconanim":
+		return iconanimRenderer(listWrap, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }
