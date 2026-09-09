@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -1981,6 +1982,8 @@ func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence ti
 	n := 0
 	t := time.NewTicker(cadence)
 	defer t.Stop()
+	var last []byte // the last frame actually sent, for adaptive skipping
+	sent, skipped := 0, 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -1990,7 +1993,18 @@ func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence ti
 		case <-t.C:
 		}
 		n++
-		frame, err := ni.EncodeFrame(render(n))
+		// Adaptive rate: render every tick, but only SEND when the frame
+		// differs from the last one sent. A static screen (the still logon)
+		// is drawn once and then goes quiet; a moving scene sends every frame.
+		data := render(n)
+		if data == nil {
+			continue
+		}
+		if bytes.Equal(data, last) {
+			skipped++
+			continue
+		}
+		frame, err := ni.EncodeFrame(data)
 		if err != nil {
 			return
 		}
@@ -1998,8 +2012,10 @@ func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence ti
 			log("push: %v", err)
 			return
 		}
-		if n%10 == 1 {
-			log("-> pushed frame %d (%d bytes)", n, len(render(n)))
+		last = data
+		sent++
+		if sent%20 == 1 {
+			log("-> pushed frame %d (%d bytes; %d sent, %d skipped)", n, len(data), sent, skipped)
 		}
 	}
 }
