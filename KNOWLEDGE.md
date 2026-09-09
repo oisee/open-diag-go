@@ -254,9 +254,37 @@ block. Non-ALV table controls instead page with `APPL4 DYNT.TABLE_ROW_DAT`
 `CL_ALV_CUL_CONTROLLER`) but **no OData/SADL query text is on the DIAG wire** —
 pushdown is entirely server-side (ABAP↔HANA). To a DIAG client, IDA is
 indistinguishable from classic ALV except by these class names; the client only
-ever speaks the generic CFW `DATAREQUEST`/automation protocol. **The readable
-data path over DIAG is the classic list channel** (§5): "Standard list" mode
-delivers the T100 rows as cleartext `VARINFO.0b` runs, ALV mode does not.
+ever speaks the generic CFW `DATAREQUEST`/automation protocol. The classic list
+channel (§5) is the *cleartext* data path; the ALV blob is opaque **but not
+unreadable — it decompresses** (below).
+
+**Cracking the ALV row blob.** The `RFC_TR.00` OLE-automation payload is a
+**doubly-nested SAP-LZH container fragmented into 250-byte RFC rows**, and it
+**decompresses to the real cell values** (proven on T100). To read it:
+1. Take the `APPL RFC_TR` (0x08) value; `SplitRFCTR` names `SAPLOLEA /
+   OLE_FLUSH_CALL / IMPORT_XML`, params incl. `XML_DATA_STREAM`.
+2. Scan for `12 1f 9d` — the SAP-LZH magic; the 8-byte header starts 5 bytes
+   before it (`[ulen u32 LE][0x12][1f 9d][x]`, `0x12` = LZH).
+3. **De-chunk:** keep the 8-byte header, then strip each 6-byte RFC-row marker
+   `03 05 03 05 <len u16 BE>` (`00 fa` = 250) and concat payloads until the tag
+   changes (`03 05 03 06 00 00`). Then `sapcompress.Decompress` (LZH = 2-bit
+   prefix + raw DEFLATE; already in vsp `pkg/sapcompress`).
+4. The decompressed stream is the automation call: a **VERBS script**
+   (`CreateControl, SetDataFromUrl, InsertPacket, GetTable …`), a value pool
+   (`SAPGUI.GridViewCtrl.1`, `SAP.DataPOnDemand.1`, the row count), and a
+   **VARS stream that holds *more* `12 1f 9d` LZH blobs** (not chunked) — the
+   DataProvider R3TABLE packets.
+5. Decompress those: a **field catalog** (30-char space-padded (struct,field)
+   name pairs + a type/len descriptor — for T100: `SPRSL, ARBGB, MSGNR, TEXT`)
+   and **data packets** (`ff ff ff ff 01 …` then row-major fixed-width cells).
+   Slice cells by the catalog field lengths.
+
+Proof (public T100 demo content, read off the wire): `SPRSL=E ARBGB=Q6
+MSGNR=001 TEXT="Enter an existing info structure"` and other varied rows across
+many frames. **Caveat:** the provider is `SAP.DataPOnDemand.1` — each flush
+ships ~one populated row + catalog + index tables; the rest arrive on scroll
+(`<DATAREQUEST>` → new `RFC_TR.00` `InsertPacket`s). So a full table read needs
+to drive the paging, not just one frame.
 
 ## 13. Control Framework items (grids, trees, editors)
 

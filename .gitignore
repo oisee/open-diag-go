@@ -13,3 +13,6 @@ odgp-server
 # throwaway decode/scratch programs (agents + manual)
 zz_*.go
 *_tmp.go
+
+# research-agent scratch decoders
+scratch_*
