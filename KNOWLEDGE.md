@@ -155,34 +155,47 @@ Entry layout (confirmed across .01/.02, one entry):
   the menu), unrelated to the fcode-number.
 
 `.03` (toolbar): `pos.byte0` = toolbar slot; text = `@icon@ caption \0\0 tooltip`.
-`.04` (function keys): `pos.byte0` = entry index; **the fcode-number IS the SAP
-virtual key code** — `0x01` F1 (Help), `0x02` F2 (Choose), `0x03` F3 (Back),
-`0x04` F4, `0x0b` F11 (Save), `0x0c` F12 (Cancel); numbers `> 0x0c` are the
-Shift/Ctrl-F variants; text = the label.
+`.04` (all bound functions): `pos.byte0` = running index; the function-number
+is an **opaque function id**, *not* a key code (num 74 = "New GUI Window",
+num 80 = "First Page"). It is only the join key; the **keystroke** a function
+binds to is defined separately (below).
 
-**How a function reaches the server (confirmed):** the client always sends the
-chosen function as an **ASCII `=STRING` in the OK-code** (VARINFO id 0x0c sid
-0x04) — never a number. For **dynpro elements** that string is carried *inline
-in the atom*: a pushbutton atom's `Function` field is `"=SHOP"`, so a
-synthesized pushbutton sends its own code on click with no MNUENTRY at all
-(this is how the `snake` game's buttons work). Tabstrip tabs are the same,
-in the newly-named sub-streams `DYNT.TABSTRIP_DEF` (0x09/0x0f) and
-`DYNT.TABSTRIP_TAB` (0x09/0x10). **MNUENTRY carries only numbers + labels, no
-strings, and there is no number→string table on the wire.**
+**Registration — how a key comes to fire (the real mechanism).** MNUENTRY gives
+each function a *number* + label + placement. The *keystroke* is bound in a
+second table:
+- **`ST_R3INFO.13`** (id 0x06 sid 0x13, labelled "TRANSACTION" but carrying the
+  **keyboard accelerator table** on a status frame) — rows `[slot][2-ASCII-digit
+  function#][NUL]<&keystroke tokens>[NUL]`, e.g. `03 → &F3 & &A&L` (F3 + Alt-←),
+  `11 → &C S & &F11` (Ctrl+S / F11), `74 → &C N` (Ctrl+N). A function may have a
+  primary and a secondary keystroke (the slot byte).
+- **`ST_R3INFO.14`** (`ACCEL_LEGEND`) — the token legend: `&0`=Enter, `&1`=PgUp,
+  `&C`=Ctrl, `&S`=Shift, `&F`=F, `&L`=←, … (display data for the menu hint).
 
-**Open gap:** the capture never fired a *pure* MNUENTRY function (no dropdown
-item, toolbar button, or bare function key was pressed), so how a menu/key
-*number* becomes the `=STRING` the client sends is unproven. One targeted sniff
-settles it: on a status-mapped screen, click a dropdown item or press F11, then
-read VARINFO.04.
+So a full registration = an MNUENTRY.02/03/04 entry (number+label) **joined by
+the number** to a `.13` row (number→keystroke). **No OK-code string is ever sent
+to the GUI** — on a keypress the GUI transmits the *number*, and the 4-char
+OK-code string lives only in the ABAP PF-status, resolved server-side.
+
+**How a function reaches the server:**
+- **Dynpro elements** carry their `=STRING` *inline in the atom* — a pushbutton
+  atom's `Function` = `"=SHOP"`, so a synthesized button sends exactly that on
+  click, no MNUENTRY needed (this is how `snake`'s buttons work). Tabstrip tabs
+  the same (`DYNT.TABSTRIP_DEF` 0x09/0x0f, `DYNT.TABSTRIP_TAB` 0x09/0x10).
+- **Menu / toolbar / function keys** send the MNUENTRY **number**, not a string.
 
 **What we can synthesize:**
-- **Pointer-driven (pushbuttons, tabs) — today.** The fcode string is
-  self-contained in the atom; already built (`dynt_encode.go`). Games can be
-  driven by synthesized buttons now.
-- **Keyboard (F-keys) — after the one sniff.** A synthesized `MNUENTRY.04`
-  entry with a key's number will make the GUI fire a PAI on that key, but the
-  OK-code string it then sends is unconfirmed until the sniff above.
+- **Pointer-driven (pushbuttons, tabs) — arbitrary string, today.** The `=CODE`
+  is authored in the atom (`dynt_encode.go`); full control.
+- **Keyboard (F-keys) — a number we own.** We *are* the server, so we register
+  a key by emitting an MNUENTRY.04 entry with a function number N of our choice
+  **plus** a `ST_R3INFO.13` row binding N to the keystroke (e.g. `&F5`); on F5
+  the GUI sends N and we decode N→our action ("up"). We cannot make it emit a
+  chosen `=STRING` (no such wire field), but we don't need one.
+
+**Open gap (narrowed):** which C→S item carries the fired number N was never
+captured (no bare menu/key press in the capture — SE38 went through the TextEdit
+control). One sniff closes it: on Easy Access, press **F8**/**F11** or click a
+dropdown item with nothing else focused, and read that single C→S frame.
 
 **Reuse works today:** splicing our fields DYNT_ATOM into a captured logon frame
 inherits its real MNUENTRY, so the menu bar, `New password` and status are
