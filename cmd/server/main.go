@@ -579,6 +579,16 @@ func withSound(items []diag.Item, n int) []diag.Item {
 // by moving them, not by redrawing a grid of characters. A frame is a
 // handful of elements, so it is small and the GUI keeps up at a fast
 // cadence; the motion is smoother than the starfield's.
+// centre pads text to width with spaces on both sides.
+func centre(text string, width int) string {
+	if len(text) >= width {
+		return text
+	}
+	left := (width - len(text)) / 2
+	right := width - len(text) - left
+	return fmt.Sprintf("%*s%s%*s", left, "", text, right, "")
+}
+
 func widgetsScreen(t int) *frame.Screen {
 	scr := frame.New(27, 120)
 	scr.Frame(0, 0, 78, 24, "OPEN-DIAG-GO-PRO  --  widgets orbiting, drawn by Go")
@@ -592,7 +602,12 @@ func widgetsScreen(t int) *frame.Screen {
 		ang := -float64(t)*speed + float64(i)*(2.0*math.Pi/3.0) // minus = counter-clockwise
 		col := int(cx + rx*math.Cos(ang))
 		row := int(cy + ry*math.Sin(ang))
-		scr.Button(row, col, len(lab)+2, lab, fmt.Sprintf("=B%d", i))
+		// Depth: 0 at the back (top), 1 at the front (bottom). The button
+		// grows with depth, so the nearer ones look bigger, and the caption
+		// is centred in the wider box.
+		depth := (math.Sin(ang) + 1.0) / 2.0
+		w := 6 + int(depth*12.0) // 6 wide at the back, 18 at the front
+		scr.Button(row, col, w, centre(lab, w-2), fmt.Sprintf("=B%d", i))
 	}
 	scr.Text(int(cy), int(cx)-3, "( o )")
 	scr.Text(25, 2, fmt.Sprintf("frame %d   3 buttons orbiting CCW   F3/Back stops", t))
