@@ -188,6 +188,29 @@ func (s *Screen) Radio(row, col int, name, label string, on bool) *Screen {
 	return s
 }
 
+// Overlay puts values the client returned back into the screen's fields,
+// matched by the cell they sit on, so a re-render keeps what the user
+// typed. It is how a static screen answers a PAI without losing input.
+func (s *Screen) Overlay(vals []diag.FieldValue) *Screen {
+	for i := range s.atoms {
+		a := &s.atoms[i]
+		if a.EType != diag.AtomInputField && a.EType != diag.AtomOutputField {
+			continue
+		}
+		for _, v := range vals {
+			if v.Row == a.Row && v.Col == a.Col {
+				w := a.VisibleLength
+				if w <= 0 {
+					w = len(v.Value)
+				}
+				a.Text = padValue(v.Value, w, a.Attr&diag.AttrJustRight != 0)
+				a.Length = len(a.Text)
+			}
+		}
+	}
+	return s
+}
+
 // Atoms is the screen as the atoms diag encodes.
 func (s *Screen) Atoms() []diag.Atom { return s.atoms }
 

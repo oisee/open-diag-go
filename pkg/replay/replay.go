@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
@@ -106,4 +107,43 @@ func (c *Capture) ServerFrame(index int) (Frame, bool) {
 		}
 	}
 	return Frame{}, false
+}
+
+// FindPopup scans a whole capture, every connection, for the modal log-off
+// popup SAP sends when a window is closed — a server frame whose DYNT_ATOM
+// names "log off". Its bytes are the template a rogue server reuses to show
+// a modal of its own: the frame is already a modal dialog, so only its text
+// and buttons need swapping. Empty when the capture has none.
+func FindPopup(path string) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		var l struct {
+			Dir string `json:"dir"`
+			Hex string `json:"hex"`
+		}
+		if json.Unmarshal(sc.Bytes(), &l) != nil || l.Dir != "S->C" || l.Hex == "" {
+			continue
+		}
+		data, err := hex.DecodeString(l.Hex)
+		if err != nil {
+			continue
+		}
+		m, err := diag.ParseMessage(data, false)
+		if err != nil {
+			continue
+		}
+		for _, it := range diag.ParseItems(m.Body) {
+			if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 &&
+				strings.Contains(strings.ToLower(string(it.Value)), "log off") {
+				return data
+			}
+		}
+	}
+	return nil
 }

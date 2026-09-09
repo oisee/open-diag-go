@@ -28,6 +28,8 @@ import (
 	"github.com/oisee/open-diag-go-pro/pkg/replay"
 )
 
+var capturePath string
+
 func main() {
 	listen := flag.String("listen", ":3201", "address SAP GUI connects to")
 	capture := flag.String("capture", "captures/probe.jsonl", "tap capture to replay")
@@ -39,6 +41,7 @@ func main() {
 	pushMS := flag.Int("push-ms", 300, "cadence of the pushed frames")
 	flag.Parse()
 
+	capturePath = *capture
 	cap, err := replay.Load(*capture, *conn)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "server:", err)
@@ -201,6 +204,8 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 		group = menuAt
 	}
 	st := &appState{}
+	popup := replay.FindPopup(capturePath)
+	jokeShown := false
 	selFrame, selOK := 0, false
 	if mode == "input" {
 		selFrame, selOK = findSelectionFrame(cap)
@@ -241,6 +246,22 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			} else {
 				log("<- client frame, %d bytes (%v)", len(payload), perr)
 			}
+			// A window-close: the GUI sends the system command "/i". Answer
+			// with the joke popup once, then accept the next click (any
+			// button) by closing.
+			if perr == nil && isClose(diag.ParseItems(m.Body)) {
+				if jp := jokePopup(popup); jp != nil && !jokeShown {
+					jokeShown = true
+					_ = send("joke popup: Where are you going??? FIORI???", jp)
+					continue
+				}
+				log("window close accepted")
+				return
+			}
+			if jokeShown {
+				log("closing after the joke")
+				return
+			}
 			if mode == "input" {
 				var client []diag.FieldValue
 				if perr == nil {
@@ -275,7 +296,17 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "showcase" || mode == "states") && pushing == nil {
+			if mode == "states" || mode == "showcase" {
+				var client []diag.FieldValue
+				if perr == nil {
+					client = diag.ClientFields(diag.ParseItems(m.Body))
+				}
+				if out := staticRespond(cap, screenFrame, mode, client); out != nil {
+					_ = send("static screen (input preserved)", out)
+				}
+				continue
+			}
+			if (mode == "flash" || mode == "synth" || mode == "list") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -290,14 +321,25 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				// A static screen is sent once and left alone; only the
 				// animated modes keep pushing on a timer. Pushing a static
 				// screen every tick overwrote what the user was typing.
-				static := mode == "list" || mode == "showcase" || mode == "states"
-				if !static {
+				if mode == "list" {
+					// a list is static: sent once, no timer.
+				} else {
 					go push(ctx, c, rend, cadence, log)
 				}
 				continue
 			}
 			if pushing != nil {
-				// The GUI answered a pushed screen; keep pushing, say nothing.
+				// A static screen or a pushing animation. Log what the client
+				// sent — its events and any function code — so a window-close
+				// signal is visible in the trace.
+				if perr == nil {
+					ci := diag.ParseItems(m.Body)
+					if evs := diag.Events(ci); len(evs) > 0 {
+						log("client events: %+v (com=%02x)", evs, m.Header.ComFlag)
+					} else {
+						log("client frame: %d items, com=%02x type=%02x", len(ci), m.Header.ComFlag, m.Header.MsgType)
+					}
+				}
 				continue
 			}
 			if group >= len(cap.Replies) {
@@ -369,6 +411,91 @@ func statesRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)
 		}
 	}
 	return func(int) []byte { return nil }
+}
+
+// isClose reports whether a client frame is the window-close request: the
+// GUI sends the system command "/i" in a VARINFO.04 item when the user
+// shuts the window.
+func isClose(items []diag.Item) bool {
+	for _, it := range items {
+		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x04 && strings.TrimSpace(string(it.Value)) == "/i" {
+			return true
+		}
+	}
+	return false
+}
+
+// jokePopup swaps the text and buttons of the captured modal log-off popup
+// for a joke: "Where are you going?" with two buttons that both say No.
+// Reusing the captured frame keeps it a real modal dialog box; only the
+// DYNT_ATOM changes. Empty when the capture had no popup to borrow.
+func jokePopup(popup []byte) []byte {
+	if popup == nil {
+		return nil
+	}
+	m, err := diag.ParseMessage(popup, false)
+	if err != nil {
+		return nil
+	}
+	items := diag.ParseItems(m.Body)
+	for i, it := range items {
+		if it.Type != diag.ItemAPPL4 || it.ID != 0x09 || it.SID != 0x02 {
+			continue
+		}
+		scr := frame.New(6, 60).
+			Text(1, 7, "Where are you going???").
+			Text(2, 7, "FIORI???").
+			Button(4, 7, 10, "No", "=NO1").
+			Button(4, 20, 10, "No", "=NO2")
+		items[i].Value = scr.Encode()
+		h := m.Header
+		h.Compress = 0
+		out, err := diag.EncodeMessage(h, items, false)
+		if err != nil {
+			return nil
+		}
+		return out
+	}
+	return nil
+}
+
+// staticScreen builds the screen for a static demo mode.
+func staticScreen(mode string) *frame.Screen {
+	switch mode {
+	case "showcase":
+		return showcaseScreen()
+	case "states":
+		return statesScreen()
+	}
+	return frame.New(24, 80)
+}
+
+// staticRespond re-renders a static screen, keeping the values the client
+// returned, wrapped in the located screen frame. Answering every PAI this
+// way keeps the GUI from hanging on Enter and never loses what was typed.
+func staticRespond(cap *replay.Capture, wrapFrame int, mode string, client []diag.FieldValue) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return nil
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return nil
+	}
+	items := diag.ParseItems(m.Body)
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			items[i].Value = staticScreen(mode).Overlay(client).Encode()
+			h := m.Header
+			h.Compress = 0
+			out, err := diag.EncodeMessage(h, items, false)
+			if err != nil {
+				return nil
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 // showcaseScreen draws one of every element the encoder knows, so a real
