@@ -158,6 +158,16 @@ func handleFrame(payload []byte) (bool, error) {
 			}
 		}
 	}
+	// A classic ABAP list arrives as positioned text runs, not as a DYNT_ATOM
+	// screen; the frame still carries a small DYNT_ATOM for the list viewer's
+	// dynpro shell, so the list runs take precedence when they are present.
+	if diag.HasListSegments(items) {
+		segs := diag.ParseListItems(items)
+		grid := tui.RenderList(segs, tui.DefaultRows, tui.DefaultCols)
+		draw(grid, listStatusLine(program, screen, len(items), len(segs)))
+		return true, nil
+	}
+
 	if atomItem == nil {
 		// A handshake or control frame with no screen; nothing to draw.
 		return false, nil
@@ -218,6 +228,21 @@ func statusLine(program, screen string, items, atoms int, aerr error) string {
 	if aerr != nil {
 		parts = append(parts, "partial")
 	}
+	parts = append(parts, "read-only  q quits")
+	return " " + strings.Join(parts, "  |  ") + " "
+}
+
+// listStatusLine names the program and screen a list frame carried, its item
+// count and the number of text runs drawn.
+func listStatusLine(program, screen string, items, segs int) string {
+	var parts []string
+	if program != "" {
+		parts = append(parts, "prog "+program)
+	}
+	if screen != "" {
+		parts = append(parts, "dynpro "+screen)
+	}
+	parts = append(parts, fmt.Sprintf("%d items", items), fmt.Sprintf("%d list runs", segs))
 	parts = append(parts, "read-only  q quits")
 	return " " + strings.Join(parts, "  |  ") + " "
 }

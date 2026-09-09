@@ -1,8 +1,10 @@
-// Package tui renders a DIAG screen — a chain of diag.Atom read from a
-// DYNT_ATOM item — onto a plain character grid, the way a terminal shows it.
-// It is read-only: it turns atoms into text and never encodes anything back.
-// The network side lives in cmd/tui; the drawing lives here so it can be
-// tested against synthetic atoms with no capture and no connection.
+// Package tui renders a DIAG screen onto a plain character grid, the way a
+// terminal shows it. A dynpro screen is a chain of diag.Atom read from a
+// DYNT_ATOM item (Render); a classic ABAP list is a stream of positioned text
+// runs read from the SBA/SFE/SLC/VARINFO.0b items (RenderList). It is
+// read-only: it turns items into text and never encodes anything back. The
+// network side lives in cmd/tui; the drawing lives here so it can be tested
+// against synthetic atoms and segments with no capture and no connection.
 package tui
 
 import (
@@ -90,6 +92,42 @@ func Render(atoms []diag.Atom, minRows, minCols int) *Grid {
 			continue
 		}
 		g.put(a.Row, a.Col, s)
+	}
+	return g
+}
+
+// RenderList places the text runs of a classic ABAP list onto a grid at least
+// minRows by minCols. Each segment is drawn at its own row and column, the way
+// the list stream positioned it; the grid grows so no run is clipped off the
+// bottom or the right. Runs are drawn in arrival order, so where the list
+// overprints a cell the later run wins, as it does in the GUI. Colour lives on
+// the segment for a colour-aware front end; this plain character grid shows the
+// text only.
+func RenderList(segs []diag.ListSegment, minRows, minCols int) *Grid {
+	rows, cols := minRows, minCols
+	if rows < 1 {
+		rows = DefaultRows
+	}
+	if cols < 1 {
+		cols = DefaultCols
+	}
+	for _, s := range segs {
+		if s.Text == "" {
+			continue
+		}
+		if s.Row+1 > rows {
+			rows = s.Row + 1
+		}
+		if end := s.Col + len([]rune(s.Text)); end > cols {
+			cols = end
+		}
+	}
+	g := newGrid(rows, cols)
+	for _, s := range segs {
+		if s.Text == "" {
+			continue
+		}
+		g.put(s.Row, s.Col, s.Text)
 	}
 	return g
 }

@@ -94,6 +94,61 @@ func TestRenderGrowsToFitAtom(t *testing.T) {
 	}
 }
 
+// A classic list renders its runs at the row and column the list stream gave
+// them: a coloured header cell, a ruled line, and a data row whose key and
+// value columns land where they were placed and overprint in arrival order.
+func TestRenderListPlacement(t *testing.T) {
+	segs := []diag.ListSegment{
+		{Row: 4, Col: 0, Color: diag.ColHeading, Text: "idx"},
+		{Row: 5, Col: 0, Attr: [3]byte{0x08, 0x00, 0x08}, Text: "----"},
+		{Row: 6, Col: 0, Color: diag.ColKey, Text: "  1"},
+		{Row: 6, Col: 29, Color: diag.ColOff, Text: "1"},
+	}
+	g := RenderList(segs, DefaultRows, DefaultCols)
+	if got := at(g, 4, 0, 3); got != "idx" {
+		t.Errorf("header = %q, want %q", got, "idx")
+	}
+	if got := at(g, 5, 0, 4); got != "----" {
+		t.Errorf("ruled line = %q, want %q", got, "----")
+	}
+	if got := at(g, 6, 0, 3); got != "  1" {
+		t.Errorf("key column = %q, want %q", got, "  1")
+	}
+	if got := g.At(6, 29); got != '1' {
+		t.Errorf("value column = %q, want %q", string(got), "1")
+	}
+	// Rows above the first run stay blank.
+	if line := g.Line(0); strings.TrimSpace(line) != "" {
+		t.Errorf("row 0 should be blank, got %q", line)
+	}
+}
+
+// Later runs overprint earlier ones at a shared cell, the way SAP's idx column
+// and its "row" label overlap on the wire.
+func TestRenderListOverprint(t *testing.T) {
+	segs := []diag.ListSegment{
+		{Row: 6, Col: 0, Text: "        1"}, // nine-wide idx cell, "10" clipped to one digit here
+		{Row: 6, Col: 9, Text: "row"},
+	}
+	g := RenderList(segs, DefaultRows, DefaultCols)
+	if got := at(g, 6, 9, 3); got != "row" {
+		t.Errorf("overprinted cell = %q, want %q", got, "row")
+	}
+}
+
+// A list grows the grid past the requested minimum so a run near the bottom
+// right is not lost.
+func TestRenderListGrows(t *testing.T) {
+	segs := []diag.ListSegment{{Row: 40, Col: 100, Text: "end of list"}}
+	g := RenderList(segs, DefaultRows, DefaultCols)
+	if g.Rows < 41 || g.Cols < 111 {
+		t.Fatalf("grid = %dx%d, want at least 41x111", g.Rows, g.Cols)
+	}
+	if got := at(g, 40, 100, 11); got != "end of list" {
+		t.Errorf("grown-into run = %q, want %q", got, "end of list")
+	}
+}
+
 // Clip drops the overflow of a screen larger than the terminal instead of
 // wrapping it.
 func TestClip(t *testing.T) {
