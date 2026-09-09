@@ -196,6 +196,17 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 		log("-> %s, %d bytes", what, len(plain))
 		return err
 	}
+	// closeSession ends the dialog the way the real server does: a bare
+	// DIAG header with the end-of-conversation and end-of-program flags,
+	// no body. The GUI closes the window on it, where a dropped socket
+	// gave a "connection broken" error instead.
+	closeSession := func() {
+		h := diag.Header{ComFlag: diag.FlagTermEOC | diag.FlagTermEOP, MsgInfo: 0x01}
+		if fr, err := ni.EncodeFrame(h.Bytes()); err == nil {
+			_, _ = c.Write(fr)
+		}
+		log("-> session end (EOP)")
+	}
 	dec, _ := ni.NewFrameDecoder(64 << 20)
 	buf := make([]byte, 64<<10)
 	// group is the client frame of the capture the next reply group belongs to.
@@ -255,10 +266,12 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 					_ = send("joke popup: Where are you going??? FIORI???", jp)
 					continue
 				}
+				closeSession()
 				log("window close accepted")
 				return
 			}
 			if jokeShown {
+				closeSession()
 				log("closing after the joke")
 				return
 			}
