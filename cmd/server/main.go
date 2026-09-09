@@ -119,7 +119,8 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	if mode == "menu" || mode == "counter" {
 		group = menuAt
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" {
+	st := &appState{}
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -151,6 +152,17 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				log("<- client frame, %d bytes, %s, %d items", len(payload), m.Header, len(diag.ParseItems(m.Body)))
 			} else {
 				log("<- client frame, %d bytes (%v)", len(payload), perr)
+			}
+			if mode == "app" {
+				st.turns++
+				if perr == nil {
+					st.fields = diag.ClientFields(diag.ParseItems(m.Body))
+					st.events = diag.Events(diag.ParseItems(m.Body))
+				}
+				if out, ok := appRespond(cap, screenFrame, st); ok {
+					_ = send(fmt.Sprintf("app screen, turn %d", st.turns), out)
+				}
+				continue
 			}
 			if (mode == "flash" || mode == "synth" || mode == "list") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, log)
@@ -243,6 +255,64 @@ func listRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		return func(int) []byte { return nil }
 	}
 	return func(int) []byte { return payload }
+}
+
+// appState is what a Go "PBO/PAI" keeps between screens: how many times the
+// user acted, and the last values the client returned.
+type appState struct {
+	turns  int
+	fields []diag.FieldValue
+	events []diag.Event
+}
+
+// appScreen is the demo handler: it draws what the user has done. Each PAI
+// (an Enter, a button) is one turn; any value the client echoed and any
+// control event are shown. This is a Go program's PBO — the screen — built
+// from the PAI it just received.
+func appScreen(st *appState) *frame.Screen {
+	scr := frame.New(27, 120).
+		Text(1, 2, "odgp interactive  --  a Go PBO/PAI loop").
+		Text(3, 2, "Enters so far").
+		Number(3, 20, 10, "GV_TICKS", st.turns).
+		Text(5, 2, "press Enter to count; what you type in a field comes back below")
+	row := 7
+	for _, f := range st.fields {
+		if f.Value == "" {
+			continue
+		}
+		scr.Text(row, 2, fmt.Sprintf("field @%d,%d", f.Row, f.Col))
+		scr.Text(row, 20, f.Value)
+		row++
+	}
+	for _, e := range st.events {
+		scr.Text(row, 2, fmt.Sprintf("event %s/%s %s", e.ShellID, e.EventID, e.Value))
+		row++
+	}
+	return scr
+}
+
+// appRespond builds one server frame for the app: the demo screen wrapped
+// in the located screen frame, its DYNT_ATOM ours.
+func appRespond(cap *replay.Capture, wrapFrame int, st *appState) ([]byte, bool) {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return nil, false
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return nil, false
+	}
+	items := diag.ParseItems(m.Body)
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			items[i].Value = appScreen(st).Encode()
+			h := m.Header
+			h.Compress = 0
+			out, err := diag.EncodeMessage(h, items, false)
+			return out, err == nil
+		}
+	}
+	return nil, false
 }
 
 func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log func(string, ...any)) func(n int) []byte {
