@@ -377,22 +377,20 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			}
 			if mode == "echo" {
 				// No buttons: every client frame is a keypress or menu action.
-				// Show the function code it produced and the header flags, so a
-				// key's code is read straight off the screen. Enter and the
-				// standard function keys fire on any dynpro; a menu shortcut
-				// fires if the screen's status maps it.
+				// The function code is not always in VARINFO.04 — a key can
+				// arrive as a UI_EVENT — so show the VALUES of the items that
+				// carry an action, not just their keys, to read what each key
+				// actually sent.
 				st.turns++
 				if perr == nil {
 					items := diag.ParseItems(m.Body)
 					fc := funcCode(items)
-					evs := diag.Events(items)
-					line := fmt.Sprintf("#%d fcode=%q com=%02x type=%02x events=%d [%s]",
-						st.turns, fc, m.Header.ComFlag, m.Header.MsgType, len(evs), itemKeys(items))
+					line := fmt.Sprintf("#%d fc=%q  %s", st.turns, fc, itemVals(items))
 					st.echo = append(st.echo, line)
 					if len(st.echo) > 17 {
 						st.echo = st.echo[len(st.echo)-17:]
 					}
-					log("echo %s", line)
+					log("echo #%d fc=%q com=%02x type=%02x  %s", st.turns, fc, m.Header.ComFlag, m.Header.MsgType, itemVals(items))
 				}
 				if out, ok := echoRespond(cap, screenFrame, st); ok {
 					_ = send("echo screen", out)
@@ -609,6 +607,43 @@ func itemKeys(items []diag.Item) string {
 		ks = append(ks, it.Key())
 	}
 	return strings.Join(ks, " ")
+}
+
+// itemVals renders the values of the items that can carry an action — the
+// OK-code, the UI events, the function-info varinfos — as key="text"|hex, so a
+// key's identity (which arrives as a named UI event, not always a function
+// code) is visible. Housekeeping items (session, user, system) are skipped.
+func itemVals(items []diag.Item) string {
+	var parts []string
+	for _, it := range items {
+		k := it.Key()
+		keep := strings.Contains(k, "UI_EVENT") ||
+			strings.Contains(k, "VARINFO.04") || strings.Contains(k, "VARINFO.06") ||
+			strings.Contains(k, "VARINFO.08") || strings.Contains(k, "VARINFO.09") ||
+			strings.HasPrefix(k, "APPL DYNT")
+		if keep && len(it.Value) > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%s", k, showVal(it.Value)))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+// showVal is a value as printable text, with a hex tail for a short one so a
+// non-printable byte is still readable.
+func showVal(b []byte) string {
+	var sb strings.Builder
+	for _, c := range b {
+		if c >= 0x20 && c < 0x7f {
+			sb.WriteByte(c)
+		} else {
+			sb.WriteByte('.')
+		}
+	}
+	s := sb.String()
+	if len(b) <= 24 {
+		return fmt.Sprintf("%q|%x", s, b)
+	}
+	return fmt.Sprintf("%q", s)
 }
 
 func isClose(items []diag.Item) bool {
