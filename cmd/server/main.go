@@ -1656,36 +1656,44 @@ func clampi(v, lo, hi int) int {
 // stalls on hundreds of runs). The plasma is smooth, so each row compresses to a
 // handful of runs — that is what lets the display be this large without hanging.
 func ledSegments(n int) []diag.ListSegment {
-	const rows, cols, cw = 20, 32, 2
+	// The LED grid is LOGICAL: lrows x lcols cells. Each is drawn as a bw x bh
+	// block of character cells, so the display is big and chunky while the run
+	// count stays tied to the logical resolution — horizontal doubling is just a
+	// longer run (free to RLE), vertical doubling repeats the row. bw=4,bh=2
+	// makes a roughly square LED (a char cell is about half as wide as tall).
+	const lrows, lcols = 10, 22
+	const bw, bh = 4, 2
 	segs := []diag.ListSegment{
-		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED plasma: colour + letters (RLE)"),
+		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED plasma: colour + letters (RLE, 2x blocks)"),
 	}
 	t := float64(n) * 0.15
-	for r := 0; r < rows; r++ {
-		startCol, runW := 0, 0
-		var runCol, runCh byte
-		flush := func() {
-			if runW > 0 {
-				segs = append(segs, diag.ListText(2+r, 2+startCol*cw, runCol,
-					strings.Repeat(string(runCh), runW*cw)))
+	for lr := 0; lr < lrows; lr++ {
+		// Run-length encode the logical row: coalesce adjacent LEDs of the same
+		// colour and letter.
+		type run struct {
+			startLC, wLC int
+			col, ch      byte
+		}
+		var runs []run
+		for lc := 0; lc < lcols; lc++ {
+			col, ch := ledCell(lr, lc, t)
+			if k := len(runs) - 1; k >= 0 && runs[k].col == col && runs[k].ch == ch {
+				runs[k].wLC++
+			} else {
+				runs = append(runs, run{lc, 1, col, ch})
 			}
 		}
-		for c := 0; c < cols; c++ {
-			col, ch := ledCell(r, c, t)
-			switch {
-			case runW == 0:
-				startCol, runW, runCol, runCh = c, 1, col, ch
-			case col == runCol && ch == runCh:
-				runW++
-			default:
-				flush()
-				startCol, runW, runCol, runCh = c, 1, col, ch
+		// Emit the row bh times (vertical doubling); each run scaled by bw.
+		for b := 0; b < bh; b++ {
+			sr := 2 + lr*bh + b
+			for _, rn := range runs {
+				segs = append(segs, diag.ListText(sr, 2+rn.startLC*bw, rn.col,
+					strings.Repeat(string(rn.ch), rn.wLC*bw)))
 			}
 		}
-		flush()
 	}
-	segs = append(segs, diag.ListText(2+rows+1, 2, diag.ColNormal,
-		fmt.Sprintf("frame %d   %dx%d  hue + letters, RLE   F3/Back stops", n, rows, cols)))
+	segs = append(segs, diag.ListText(2+lrows*bh+1, 2, diag.ColNormal,
+		fmt.Sprintf("frame %d   %dx%d LEDs as %dx%d blocks, RLE   F3/Back stops", n, lrows, lcols, bw, bh)))
 	return segs
 }
 
