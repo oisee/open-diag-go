@@ -22,6 +22,7 @@ import (
 	"github.com/oisee/open-rfc-go/ni"
 
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go-pro/pkg/frame"
 	"github.com/oisee/open-diag-go-pro/pkg/replay"
 )
 
@@ -118,12 +119,12 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			} else {
 				log("<- client frame, %d bytes (%v)", len(payload), perr)
 			}
-			if mode == "flash" && pushing == nil {
+			if (mode == "flash" || mode == "synth") && pushing == nil {
 				if f, ok := cap.ServerFrame(screenFrame); ok {
 					_ = send(fmt.Sprintf("the probe's screen, no handshake (capture S->C #%d)", screenFrame), f.Data)
 				}
 				pushing = make(chan struct{})
-				go push(ctx, c, cap, pushFrame, cadence, log)
+				go push(ctx, c, renderer(mode, cap, pushFrame, log), cadence, log)
 				continue
 			}
 			if pushing != nil {
@@ -147,7 +148,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 					_ = send(fmt.Sprintf("the probe's screen (capture S->C #%d)", screenFrame), f.Data)
 				}
 				pushing = make(chan struct{})
-				go push(ctx, c, cap, pushFrame, cadence, log)
+				go push(ctx, c, renderer(mode, cap, pushFrame, log), cadence, log)
 			}
 		}
 	}
@@ -157,21 +158,16 @@ var counterText = regexp.MustCompile(`\x20{4,9}[0-9]{1,6}\x20`)
 
 // push sends the probe's pushed frame again and again, the counter in it
 // replaced, the header's stat=f0 kept as the capture had it.
-func push(ctx context.Context, c net.Conn, cap *replay.Capture, pushFrame int, cadence time.Duration, log func(string, ...any)) {
-	f, ok := cap.ServerFrame(pushFrame)
-	if !ok {
-		log("no server frame #%d to push", pushFrame)
-		return
+// renderer picks how the pushed frames are built: synth from our own
+// frame.Screen, or a patch of a captured frame.
+func renderer(mode string, cap *replay.Capture, pushFrame int, log func(string, ...any)) func(n int) []byte {
+	if mode == "synth" {
+		return synthRenderer(cap, pushFrame, log)
 	}
-	plain, err := replay.Plain(f.Data)
-	if err != nil {
-		log("push frame: %v", err)
-		return
-	}
-	loc := counterText.FindIndex(plain)
-	if loc == nil {
-		log("push frame: no counter text found; pushing it unchanged")
-	}
+	return patchRenderer(cap, pushFrame, log)
+}
+
+func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence time.Duration, log func(string, ...any)) {
 	n := 0
 	t := time.NewTicker(cadence)
 	defer t.Stop()
@@ -182,13 +178,7 @@ func push(ctx context.Context, c net.Conn, cap *replay.Capture, pushFrame int, c
 		case <-t.C:
 		}
 		n++
-		out := append([]byte{}, plain...)
-		if loc != nil {
-			width := loc[1] - loc[0] - 1
-			text := fmt.Sprintf("%*d ", width, n)
-			copy(out[loc[0]:loc[1]], text)
-		}
-		frame, err := ni.EncodeFrame(out)
+		frame, err := ni.EncodeFrame(render(n))
 		if err != nil {
 			return
 		}
@@ -197,7 +187,77 @@ func push(ctx context.Context, c net.Conn, cap *replay.Capture, pushFrame int, c
 			return
 		}
 		if n%10 == 1 {
-			log("-> pushed frame %d (%d bytes)", n, len(out))
+			log("-> pushed frame %d (%d bytes)", n, len(render(n)))
 		}
+	}
+}
+
+// patchRenderer reuses a captured push frame and rewrites the counter text
+// in its decompressed bytes — the screen is the capture's, only the number
+// is ours.
+func patchRenderer(cap *replay.Capture, pushFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(pushFrame)
+	if !ok {
+		log("no server frame #%d to push", pushFrame)
+		return func(int) []byte { return nil }
+	}
+	plain, err := replay.Plain(f.Data)
+	if err != nil {
+		log("push frame: %v", err)
+		return func(int) []byte { return nil }
+	}
+	loc := counterText.FindIndex(plain)
+	if loc == nil {
+		log("push frame: no counter text found; pushing it unchanged")
+	}
+	return func(n int) []byte {
+		out := append([]byte{}, plain...)
+		if loc != nil {
+			width := loc[1] - loc[0] - 1
+			copy(out[loc[0]:loc[1]], fmt.Sprintf("%*d ", width, n))
+		}
+		return out
+	}
+}
+
+// synthRenderer keeps a captured frame only as the wrapper — the env block,
+// the dynpro, the DataManager XML — and rebuilds the screen itself each
+// tick from a frame.Screen we describe. This is the near side proving
+// itself against a real GUI: the number the GUI shows is drawn from our
+// own DYNT_ATOM, not the capture's.
+func synthRenderer(cap *replay.Capture, pushFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(pushFrame)
+	if !ok {
+		log("no server frame #%d to wrap", pushFrame)
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		log("wrap frame: %v", err)
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	atomIdx := -1
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			atomIdx = i
+		}
+	}
+	if atomIdx < 0 {
+		log("wrap frame has no DYNT_ATOM; nothing to synthesize into")
+		return func(int) []byte { return nil }
+	}
+	h := m.Header
+	h.Compress = 0
+	return func(n int) []byte {
+		scr := frame.New(27, 120).
+			Text(1, 1, "Ticks").
+			Number(1, 9, 10, "GV_TICKS", n)
+		items[atomIdx].Value = scr.Encode()
+		out, err := diag.EncodeMessage(h, items, false)
+		if err != nil {
+			return nil
+		}
+		return out
 	}
 }

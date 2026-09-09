@@ -1,0 +1,138 @@
+// Package frame is the screen described the way you would draw it, not the
+// way DIAG carries it: a grid with elements placed on it — a label, a field,
+// a checkbox, a button, or a run of text lines for an old list screen — that
+// turns into the DYNT_ATOM a real SAP GUI draws. It is the near side of the
+// serializer; diag is the far side.
+//
+// The API reads like a small TUI builder: New a screen, place elements by
+// row and column (0-based), and Encode it. Every field carries a name, the
+// ABAP name the GUI sends back with the value; a label does not.
+package frame
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/oisee/open-diag-go-pro/pkg/diag"
+)
+
+// Screen is a grid of the given size with elements placed on it.
+type Screen struct {
+	Rows, Cols int
+	atoms      []diag.Atom
+}
+
+// New is a screen of rows by cols character cells.
+func New(rows, cols int) *Screen { return &Screen{Rows: rows, Cols: cols} }
+
+// clip keeps a placement on the grid and trims a text that runs off the
+// right edge, so a description can never produce an atom off-screen.
+func (s *Screen) clip(row, col, width int, text string) (int, int, int, string) {
+	if row < 0 {
+		row = 0
+	}
+	if col < 0 {
+		col = 0
+	}
+	if s.Cols > 0 && col+width > s.Cols {
+		width = s.Cols - col
+	}
+	if width < 0 {
+		width = 0
+	}
+	if len([]rune(text)) > width {
+		text = string([]rune(text)[:width])
+	}
+	return row, col, width, text
+}
+
+// Text places a static caption.
+func (s *Screen) Text(row, col int, text string) *Screen {
+	row, col, _, text = s.clip(row, col, len(text), text)
+	s.atoms = append(s.atoms, diag.Label(row, col, text))
+	return s
+}
+
+// Output places a protected field of width columns holding value, with the
+// ABAP name the client will echo. numeric right-justifies it.
+func (s *Screen) Output(row, col, width int, name, value string, numeric bool) *Screen {
+	row, col, width, value = s.clip(row, col, width, padValue(value, width, numeric))
+	attr := byte(diag.AttrProtected)
+	if numeric {
+		attr |= diag.AttrJustRight
+	}
+	s.atoms = append(s.atoms,
+		diag.OutputField(row, col, width, value, numeric),
+		diag.FieldName(row, col, upper(name), attr))
+	return s
+}
+
+// Number is an Output holding an integer.
+func (s *Screen) Number(row, col, width int, name string, value int) *Screen {
+	return s.Output(row, col, width, name, fmt.Sprintf("%d", value), true)
+}
+
+// Input places an editable field of width columns.
+func (s *Screen) Input(row, col, width int, name, value string) *Screen {
+	row, col, width, value = s.clip(row, col, width, padValue(value, width, false))
+	s.atoms = append(s.atoms,
+		diag.InputField(row, col, width, value),
+		diag.FieldName(row, col, upper(name), diag.AttrYes3D))
+	return s
+}
+
+// Checkbox places a checkbox with its label.
+func (s *Screen) Checkbox(row, col int, name, label string, on bool) *Screen {
+	state := byte(' ')
+	if on {
+		state = 'X'
+	}
+	s.atoms = append(s.atoms,
+		diag.Atom{EType: diag.AtomCheckbox, Row: row, Col: col, Attr: diag.AttrYes3D, State: state, Text: label, Status: diag.Inferred},
+		diag.FieldName(row, col, upper(name), diag.AttrYes3D))
+	return s
+}
+
+// Button places a pushbutton of the given width with a function code.
+func (s *Screen) Button(row, col, width int, caption, fcode string) *Screen {
+	if !strings.HasPrefix(fcode, "=") {
+		fcode = "=" + fcode
+	}
+	s.atoms = append(s.atoms, diag.Atom{EType: diag.AtomPushbutton, Row: row, Col: col,
+		Attr: diag.AttrYes3D, Length: width, Height: 1, Text: caption, Function: upper(fcode), Status: diag.Confirmed})
+	return s
+}
+
+// Lines lays a run of text down the screen from startRow, one label a row,
+// each trimmed to the width — an old text list shown as protected text.
+func (s *Screen) Lines(startRow int, lines []string) *Screen {
+	for i, line := range lines {
+		row := startRow + i
+		if s.Rows > 0 && row >= s.Rows {
+			break
+		}
+		s.Text(row, 0, line)
+	}
+	return s
+}
+
+// Atoms is the screen as the atoms diag encodes.
+func (s *Screen) Atoms() []diag.Atom { return s.atoms }
+
+// Encode is the DYNT_ATOM item value for this screen.
+func (s *Screen) Encode() []byte { return diag.EncodeDyntAtoms(s.atoms) }
+
+// padValue pads a value to the field width the way SAP holds it: on the
+// left for a right-justified number, on the right otherwise.
+func padValue(v string, width int, numeric bool) string {
+	if len(v) >= width {
+		return v
+	}
+	pad := strings.Repeat(" ", width-len(v))
+	if numeric {
+		return pad + v
+	}
+	return v + pad
+}
+
+func upper(s string) string { return strings.ToUpper(s) }
