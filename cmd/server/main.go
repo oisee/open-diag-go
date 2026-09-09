@@ -263,13 +263,14 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "widgets" || mode == "demo" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "widgets" || mode == "demo" || mode == "snake" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
 		}
 	}
 	var pushing chan struct{}
+	var game *snakeGame
 	for {
 		n, err := c.Read(buf)
 		if err != nil {
@@ -364,6 +365,46 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				if out, ok := appRespond(cap, screenFrame, st); ok {
 					_ = send(fmt.Sprintf("app screen, turn %d", st.turns), out)
+				}
+				continue
+			}
+			if mode == "snake" {
+				// The first client frame starts the game and a step loop; every
+				// later frame is a button press feeding the game a direction.
+				// Unlike the animations, a keypress does NOT stop it — it steers.
+				if game == nil {
+					game = newSnakeGame(48, 16)
+					_ = send("snake: first frame", staticRespondWrap(cap, screenFrame, game.render()))
+					pushing = make(chan struct{})
+					go func(stop <-chan struct{}) {
+						t := time.NewTicker(cadence)
+						defer t.Stop()
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							case <-stop:
+								return
+							case <-t.C:
+							}
+							game.step()
+							fr, err := ni.EncodeFrame(staticRespondWrap(cap, screenFrame, game.render()))
+							if err != nil {
+								return
+							}
+							if _, err := c.Write(fr); err != nil {
+								log("snake push: %v", err)
+								return
+							}
+						}
+					}(pushing)
+					continue
+				}
+				if perr == nil {
+					items := diag.ParseItems(m.Body)
+					fc := funcCode(items)
+					log("snake input: fcode=%q items=[%s]", fc, itemKeys(items))
+					game.input(fc)
 				}
 				continue
 			}
@@ -517,6 +558,26 @@ func isNewWindow(items []diag.Item) bool {
 		}
 	}
 	return false
+}
+
+// funcCode is the function code the client sent in its OK-code field
+// (VARINFO.04) — a pushbutton's "=UP", a system command, or empty.
+func funcCode(items []diag.Item) string {
+	for _, it := range items {
+		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x04 {
+			return strings.TrimSpace(string(it.Value))
+		}
+	}
+	return ""
+}
+
+// itemKeys is a one-line list of a frame's item keys, for the log.
+func itemKeys(items []diag.Item) string {
+	ks := make([]string, 0, len(items))
+	for _, it := range items {
+		ks = append(ks, it.Key())
+	}
+	return strings.Join(ks, " ")
 }
 
 func isClose(items []diag.Item) bool {
