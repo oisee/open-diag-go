@@ -72,6 +72,16 @@ func (s *Screen) Number(row, col, width int, name string, value int) *Screen {
 	return s.Output(row, col, width, name, fmt.Sprintf("%d", value), true)
 }
 
+// Icon places a display-only icon: an @XX@ token in a protected output field,
+// which a dynpro GUI substitutes for the bitmap (a plain label does not). No
+// field name, since it is never read back — one atom, so a grid of them stays
+// light.
+func (s *Screen) Icon(row, col int, code string) *Screen {
+	row, col, _, code = s.clip(row, col, len(code), code)
+	s.atoms = append(s.atoms, diag.OutputField(row, col, len(code), code, false))
+	return s
+}
+
 // Input places an editable field of width columns.
 func (s *Screen) Input(row, col, width int, name, value string) *Screen {
 	row, col, width, value = s.clip(row, col, width, padValue(value, width, false))

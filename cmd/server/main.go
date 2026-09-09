@@ -889,8 +889,9 @@ func demoScenes() []scene {
 		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0, false},
 		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0, false},
 		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix, 0, false},
+		{"iconplasma", "an LED plasma of coloured icons in dynpro output fields", sceneIconPlasma, 0, false},
 		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars, 0, false},
-		{"icons", "probe: does the GUI substitute @xx@ icon tokens in a label?", sceneIcons, 0, false},
+		{"icons", "a grid of real SAP icons, drawn by us via output fields", sceneIcons, 0, false},
 	}
 }
 
@@ -1114,6 +1115,23 @@ func sceneIcons(ts float64, scr *frame.Screen) {
 			label = ">" + label // the sweeping marker
 		}
 		scr.Text(r+1, c, label)
+	}
+}
+
+// sceneIconPlasma is an LED plasma drawn in the dynpro channel: each cell is a
+// coloured SAP LED icon (green / yellow / red light, green LED) in an output
+// field, chosen by the plasma value — the same effect as the list-channel led
+// mode, but as icons, so it lives inside the demo's dynpro screen.
+func sceneIconPlasma(ts float64, scr *frame.Screen) {
+	icons := []string{"@08@", "@5B@", "@09@", "@0A@"} // green light, green LED, yellow, red
+	const rows, cols = 10, 18
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			fr, fc := float64(r), float64(c)
+			v := (math.Sin(fc/3.0+ts) + math.Sin(fr/2.0-ts) + math.Sin((fc+fr)/4.0+ts*1.3) + 3.0) / 6.0
+			idx := clampi(int(v*float64(len(icons))), 0, len(icons)-1)
+			scr.Icon(1+r, 2+c*4, icons[idx])
+		}
 	}
 }
 
