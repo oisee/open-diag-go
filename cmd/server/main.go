@@ -874,6 +874,9 @@ type scene struct {
 	// dur is this scene's length; 0 means use the demo's default (-scene-ms).
 	// The login opener needs longer than a beat, so it sets its own.
 	dur time.Duration
+	// bare drops the demo's caption and footer for this scene, so the login
+	// opener can look like a real logon screen and nothing else.
+	bare bool
 }
 
 // demoScenes are the acts, each a different way of getting motion onto a real
@@ -881,20 +884,48 @@ type scene struct {
 // bytes-per-frame is easy to feel.
 func demoScenes() []scene {
 	return []scene{
-		{"login", "a login form that sits, drifts a square, orbits, then multiplies", sceneLogin, 26 * time.Second},
-		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce, 0},
-		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit, 0},
-		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0},
-		{"boxes", "nested frames breathing — the frame primitive as graphics", sceneBoxes, 0},
-		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0},
-		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix, 0},
-		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars, 0},
-		{"icons", "probe: does the GUI substitute @xx@ icon tokens in a label?", sceneIcons, 0},
+		{"login", "a login form that sits, drifts a square, orbits, then multiplies", sceneLogin, 26 * time.Second, true},
+		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce, 0, false},
+		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit, 0, false},
+		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0, false},
+		{"boxes", "nested frames breathing — the frame primitive as graphics", sceneBoxes, 0, false},
+		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0, false},
+		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix, 0, false},
+		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars, 0, false},
+		{"icons", "probe: does the GUI substitute @xx@ icon tokens in a label?", sceneIcons, 0, false},
 	}
 }
 
-// drawLogin places one almost-standard SAP logon form at (top,left). The
-// index keeps each copy's field names distinct when several are on screen.
+// nativeLogon draws the SAP logon screen the way the capture showed it: the
+// four fields at their real rows and columns (Client, User, Password, Logon
+// Language), the Information box to the right, and the public trial welcome
+// text below — placeholder values only, never the captured credentials. This
+// is the still opening frame, indistinguishable from the real thing.
+func nativeLogon(scr *frame.Screen) {
+	scr.Text(1, 2, "Client")
+	scr.Input(1, 21, 3, "MANDT", "001")
+	scr.Text(3, 2, "User")
+	scr.Input(3, 21, 12, "BNAME", "")
+	scr.Text(4, 2, "Password")
+	scr.InputHidden(4, 21, 12, "BCODE", "")
+	scr.Text(6, 2, "Logon Language")
+	scr.Input(6, 21, 2, "LANGU", "EN")
+	scr.Frame(1, 40, 44, 7, "Information")
+	welcome := []string{
+		"ABAP Cloud Developer Trial 2023 initial shipment",
+		"",
+		"Since ABAP Cloud Developer Trial is a free offering for education",
+		"and demo purposes only, we offer it with SAP Community support.",
+		"That means that no primary support is available for this product.",
+	}
+	for i, l := range welcome {
+		scr.Text(11+i, 2, l)
+	}
+}
+
+// drawLogin places the compact logon field box at (top,left) for the moving
+// and orbiting phases — the same four fields, boxed so a flying copy reads as
+// one object. The index keeps each copy's field names distinct.
 func drawLogin(scr *frame.Screen, top, left, idx int) {
 	if top < 0 {
 		top = 0
@@ -902,16 +933,15 @@ func drawLogin(scr *frame.Screen, top, left, idx int) {
 	if left < 0 {
 		left = 0
 	}
-	scr.Frame(top, left, 30, 7, "SAP")
+	scr.Frame(top, left, 32, 7, "SAP")
 	scr.Text(top+1, left+2, "Client")
-	scr.Input(top+1, left+12, 6, fmt.Sprintf("MANDT%d", idx), "001")
+	scr.Input(top+1, left+13, 3, fmt.Sprintf("MANDT%d", idx), "001")
 	scr.Text(top+2, left+2, "User")
-	scr.Input(top+2, left+12, 14, fmt.Sprintf("BNAME%d", idx), "")
+	scr.Input(top+2, left+13, 14, fmt.Sprintf("BNAME%d", idx), "")
 	scr.Text(top+3, left+2, "Password")
-	scr.InputHidden(top+3, left+12, 14, fmt.Sprintf("BCODE%d", idx), "")
-	scr.Text(top+4, left+2, "Language")
-	scr.Input(top+4, left+12, 4, fmt.Sprintf("LANGU%d", idx), "EN")
-	scr.Button(top+5, left+2, 12, "Log On", fmt.Sprintf("=LOGIN%d", idx))
+	scr.InputHidden(top+3, left+13, 14, fmt.Sprintf("BCODE%d", idx), "")
+	scr.Text(top+5, left+2, "Logon Language")
+	scr.Input(top+5, left+18, 2, fmt.Sprintf("LANGU%d", idx), "EN")
 }
 
 // orbitLogins draws count logon forms orbiting a centre at the given angle,
@@ -934,9 +964,8 @@ func sceneLogin(ts float64, scr *frame.Screen) {
 	const homeTop, homeLeft = 4, 10
 	const dx, dy = 44.0, 11.0 // the square's sides (wider than tall: cells are)
 	switch {
-	case ts < 6: // sit still, look normal
-		drawLogin(scr, homeTop, homeLeft, 0)
-		scr.Text(homeTop+8, homeLeft, "waiting for logon...")
+	case ts < 6: // sit still, exactly like the real logon screen
+		nativeLogon(scr)
 	case ts < 12: // one lap round a square: right, down, left, up
 		f := (ts - 6) / 6 * 4 // 0..4, one side per unit
 		seg := int(f)
@@ -1195,8 +1224,10 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		}
 		scr := frame.New(27, 120)
 		scenes[idx].draw(ts, scr)
-		scr.Text(24, 1, fmt.Sprintf("scene %d/%d  %-9s  approach: %s", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach))
-		scr.Text(25, 1, "F3/Back or close the window to stop")
+		if !scenes[idx].bare {
+			scr.Text(24, 1, fmt.Sprintf("scene %d/%d  %-9s  approach: %s", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach))
+			scr.Text(25, 1, "F3/Back or close the window to stop")
+		}
 		out := append([]diag.Item{}, base...)
 		out[atomIdx].Value = scr.Encode()
 		out = withSound(out, n)
