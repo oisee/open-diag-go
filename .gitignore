@@ -8,3 +8,4 @@ captures/*.log
 /server
 /C
 odgp-server
+/tui
