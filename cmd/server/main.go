@@ -1619,31 +1619,52 @@ func ledRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte {
 	return listPushRenderer(wrap, log, ledSegments)
 }
 
-// ledSegments is one frame of an LED matrix, drawn in the list channel: a grid
-// of coloured blocks (a run of blanks whose SFE colour fills the cell) with a
-// travelling plasma over it, so col/row cells light in different colours — the
-// classic list as an LED display. Each cell is 2 chars wide so it reads square.
+// bayer is a 4x4 ordered-dither threshold matrix (0..15): it mixes two
+// neighbouring colours across cells so the eye blends them into a shade
+// between — spatial colour mixing without a per-pixel colour.
+var bayer = [4][4]float64{
+	{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5},
+}
+
+// ledSegments is one frame of an LED plasma in the list channel: the hue comes
+// from the run's SFE colour (dithered between spectrum stops for smooth mixing),
+// the luminance from an ASCII density character filling the cell (the colour is
+// the background, the glyph is dark foreground, so a denser glyph darkens the
+// cell — a halftone within the hue). Colour + ASCII, the classic list as a
+// dithered LED display.
 func ledSegments(n int) []diag.ListSegment {
 	const rows, cols, cw = 10, 18, 3
-	// The vivid end of the list palette — these fill the cell as a colour block.
-	palette := []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.ColTotal, diag.ColNegative, diag.ColGroup}
+	// The vivid list colours ordered as a spectrum.
+	grad := []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.ColTotal, diag.ColGroup, diag.ColNegative}
+	const ramp = " .:-=+*#%@" // light -> dense (darker)
 	segs := []diag.ListSegment{
-		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  an LED display in the list channel"),
+		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED plasma: colour + ASCII halftone"),
 	}
 	t := float64(n) * 0.15
-	block := strings.Repeat(" ", cw)
 	for r := 0; r < rows; r++ {
 		for c := 0; c < cols; c++ {
-			v := math.Sin(float64(c)/3.0+t) +
-				math.Sin(float64(r)/2.0-t) +
-				math.Sin((float64(c)+float64(r))/4.0+t*1.3)
-			idx := int((v + 3.0) / 6.0 * float64(len(palette)))
-			idx = ((idx % len(palette)) + len(palette)) % len(palette)
-			segs = append(segs, diag.ListText(2+r, 2+c*cw, palette[idx], block))
+			fr, fc := float64(r), float64(c)
+			hv := (math.Sin(fc/3.0+t) + math.Sin(fr/2.0-t) + math.Sin((fc+fr)/4.0+t*1.3) + 3.0) / 6.0
+			lv := (math.Sin(fc/2.5-t*0.7) + math.Cos(fr/3.0+t*0.9) + 2.0) / 4.0
+			// Hue: pick the gradient stop, dither to the next by the fraction.
+			gp := hv * float64(len(grad)-1)
+			gi := int(gp)
+			col := grad[gi]
+			if gi+1 < len(grad) && gp-float64(gi) > (bayer[r%4][c%4]+0.5)/16.0 {
+				col = grad[gi+1]
+			}
+			// Luminance: density char fills the cell.
+			di := int(lv * float64(len(ramp)-1))
+			if di < 0 {
+				di = 0
+			} else if di >= len(ramp) {
+				di = len(ramp) - 1
+			}
+			segs = append(segs, diag.ListText(2+r, 2+c*cw, col, strings.Repeat(ramp[di:di+1], cw)))
 		}
 	}
 	segs = append(segs, diag.ListText(2+rows+1, 2, diag.ColNormal,
-		fmt.Sprintf("frame %d   %dx%d LEDs, plasma   F3/Back stops", n, rows, cols)))
+		fmt.Sprintf("frame %d   %dx%d  dithered hue + halftone   F3/Back stops", n, rows, cols)))
 	return segs
 }
 
