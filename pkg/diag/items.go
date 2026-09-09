@@ -58,7 +58,7 @@ func (it Item) TypeName() string {
 // Key is what an item is, without its value: the thing to diff on.
 func (it Item) Key() string {
 	if it.Type == ItemAPPL || it.Type == ItemAPPL4 {
-		return fmt.Sprintf("%s %02x/%02x", it.TypeName(), it.ID, it.SID)
+		return fmt.Sprintf("%s %s", it.TypeName(), applName(it.ID, it.SID))
 	}
 	return it.TypeName()
 }

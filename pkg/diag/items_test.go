@@ -14,10 +14,10 @@ func TestParseItems(t *testing.T) {
 	if len(items) != 5 {
 		t.Fatalf("%d items: %+v", len(items), items)
 	}
-	if items[0].Key() != "APPL 06/0c" || string(items[0].Value) != "abc" {
+	if items[0].Key() != "APPL ST_R3INFO.0c" || string(items[0].Value) != "abc" {
 		t.Errorf("appl: %+v", items[0])
 	}
-	if items[2].Key() != "APPL4 12/09" || string(items[2].Value) != "xy" {
+	if items[2].Key() != "APPL4 ACC_LIST.09" || string(items[2].Value) != "xy" {
 		t.Errorf("appl4: %+v", items[2])
 	}
 	if items[3].TypeName() != "EOM" || len(items[3].Value) != 0 {

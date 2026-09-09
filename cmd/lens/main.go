@@ -101,7 +101,7 @@ func main() {
 			} else if string(prev) != string(it.Value) {
 				mark = "~"
 			}
-			fmt.Printf("   %s %-14s %5d  %s", mark, key, len(it.Value), it.Status)
+			fmt.Printf("   %s %-32s %5d  %s", mark, key, len(it.Value), it.Status)
 			if *values || it.Status == diag.Raw {
 				v := head(it.Value, *maxVal)
 				fmt.Printf("  %s  %q", hex.EncodeToString(v), printable(v))
@@ -110,7 +110,7 @@ func main() {
 		}
 		for key := range previous[l.Dir] {
 			if _, ok := now[key]; !ok && (*grep == "" || strings.Contains(key, *grep)) {
-				fmt.Printf("   - %-14s\n", key)
+				fmt.Printf("   - %-32s\n", key)
 			}
 		}
 		previous[l.Dir] = now
