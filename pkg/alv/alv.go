@@ -542,6 +542,214 @@ func EncodeGrid(cols []Column, rows [][]string, colours [][]int) ([]byte, error)
 	return chunkRFC(outerStream), nil
 }
 
+// --- recolour a captured grid in place (template + swap) ---
+
+// lzhCompLen is the width of the compressed-stream length field the OLE-
+// automation framing keeps immediately in front of every LZH header. Read off
+// the coloured-ALV RFC_TR (conn 1 frame #14 of captures/alvcolor.jsonl): each
+// compressed stream is introduced by an 8-byte preamble `<4-byte tag><len BE32>`
+// — tag 7B 02 67 EA at the outer (RFC-row) level, 7B 02 F4 EA one level down —
+// whose BE32 is the byte length of the compressed LZH stream (header + DEFLATE
+// body). The RFC-row chunking pads the stream's last 250-byte row past that
+// length with zeroes; a decoder reads exactly len bytes as the compressed
+// stream and ignores the padding. The length therefore MUST be rewritten when a
+// stream is re-Compressed to a new byte length. It sits lzhCompLen bytes before
+// the header (i.e. at hdr-4); the chunk framing itself (03 05 markers, the
+// 03 05 03 06 00 00 terminator) is self-delimiting and carries no other length.
+const lzhCompLen = 4
+
+// PatchColours recolours a real captured RFC_TR value (APPL item id 0x08)
+// carrying a coloured ALV grid: it rewrites each cell's colourField to
+// fn(row, col) (row and col 0-based; see ColourField for the wire encoding) and
+// returns a byte-valid RFC_TR value with everything else — the automation
+// framing and VERBS, the field catalog, and every cell's text — preserved.
+//
+// The cell packet lives three SAP-LZH layers down (RFC-row-chunked outer stream
+// → OLE-automation VARS payload → a nested chunked DataProvider stream). Only
+// the colourField u32s change, so every decompressed length is preserved at
+// every layer and only the re-Compressed byte lengths move; PatchColours splices
+// the one stream on the cell-packet path back in and updates that stream's
+// compressed-length prefix (lzhCompLen) at each layer. Everything outside the
+// spliced stream and its length prefix is left byte-for-byte identical, which is
+// what keeps a verbatim-replay template renderable.
+func PatchColours(rfctrValue []byte, fn func(row, col int) int) ([]byte, error) {
+	if fn == nil {
+		return nil, errors.New("alv: PatchColours needs a colour function")
+	}
+	// The catalog tells us which decompressed buffer is the cell packet and how
+	// many columns each row carries; DecodeGrid finds it exactly as we must.
+	g, err := DecodeGrid(rfctrValue)
+	if err != nil {
+		return nil, err
+	}
+	if len(g.Rows) == 0 {
+		return nil, errors.New("alv: RFC_TR value carries no cell packet to recolour")
+	}
+	out, ok := patchCellPath(rfctrValue, g.Cols, fn, 4)
+	if !ok {
+		return nil, errors.New("alv: could not locate the cell-packet stream to recolour")
+	}
+	return out, nil
+}
+
+// RecolourGrid is a convenience over PatchColours that takes a grid of colour
+// fields parallel to the decoded rows (colours[row][col]); cells past the edge
+// of the grid are left uncoloured (0).
+func RecolourGrid(rfctrValue []byte, colours [][]int) ([]byte, error) {
+	return PatchColours(rfctrValue, func(row, col int) int {
+		if row < len(colours) && col < len(colours[row]) {
+			return colours[row][col]
+		}
+		return 0
+	})
+}
+
+// patchCellPath finds the one chunked SAP-LZH stream in container that leads to
+// the cell packet, recolours it, re-Compresses and re-chunks it, and splices it
+// back — updating the compressed-length prefix in front of the header. It walks
+// LZH headers in wire order and descends the same way DecodeGrid's allBlobs
+// does, so it patches the very buffer DecodeGrid reads. It returns the rebuilt
+// container and whether it patched anything.
+func patchCellPath(container []byte, cols []Column, fn func(row, col int) int, depth int) ([]byte, bool) {
+	if depth <= 0 {
+		return container, false
+	}
+	pos := 0
+	for {
+		j := bytes.Index(container[pos:], lzhMagic)
+		if j < 0 {
+			break
+		}
+		hdr := pos + j - 4
+		pos = pos + j + len(lzhMagic)
+		if hdr < 0 {
+			continue
+		}
+		if _, err := sapcompress.ParseHeader(container[hdr:]); err != nil {
+			continue
+		}
+		end := chunkedStreamEnd(container, hdr)
+		dec, err := sapcompress.Decompress(dechunk(container, hdr))
+		if err != nil {
+			continue
+		}
+
+		var newDec []byte
+		patched := false
+		if _, _, isCell := decodeCellPacket(dec, cols); isCell {
+			buf := append([]byte(nil), dec...)
+			if recolourCellPacket(buf, cols, fn) > 0 {
+				newDec, patched = buf, true
+			}
+		} else {
+			newDec, patched = patchCellPath(dec, cols, fn, depth-1)
+		}
+		if !patched {
+			continue
+		}
+
+		// Same decompressed length at this layer, new compressed length.
+		recomp, err := Compress(newDec)
+		if err != nil {
+			return container, false
+		}
+		newChunked := chunkRFC(recomp)
+		out := make([]byte, 0, len(container)-(end-hdr)+len(newChunked))
+		out = append(out, container[:hdr]...)
+		out = append(out, newChunked...)
+		out = append(out, container[end:]...)
+		// Rewrite the compressed-stream length the framing keeps in front of the
+		// header, so a decoder reading len(recomp) bytes sees the whole stream.
+		if hdr >= lzhCompLen {
+			binary.BigEndian.PutUint32(out[hdr-lzhCompLen:hdr], uint32(len(recomp)))
+		}
+		return out, true
+	}
+	return container, false
+}
+
+// chunkedStreamEnd returns the offset just past a chunked stream's terminator
+// (03 05 03 06 00 00), walking the RFC rows from the 8-byte header at start the
+// same way dechunk reads them: a 03 05 03 05 marker plus its BE16 length is
+// skipped by length (marker bytes inside a payload are safe), the terminator
+// ends the stream. It is dechunk's span, used to splice a re-chunked stream in.
+func chunkedStreamEnd(b []byte, start int) int {
+	if start+headerSize > len(b) {
+		return len(b)
+	}
+	i := start + headerSize
+	for i < len(b) {
+		if i+6 <= len(b) && bytes.Equal(b[i:i+4], rowMarker) {
+			n := int(binary.BigEndian.Uint16(b[i+4 : i+6]))
+			i += 6
+			if i+n > len(b) {
+				n = len(b) - i
+			}
+			i += n
+			continue
+		}
+		if i+4 <= len(b) && bytes.Equal(b[i:i+4], endMarker) {
+			return i + 6
+		}
+		i++
+	}
+	return len(b)
+}
+
+// recolourCellPacket overwrites each data slot's colourField (its 3rd u32) with
+// fn(row, col), traversing the packet exactly as decodeCellPacket reads it so
+// the two agree cell-for-cell: rows are numbered by the order of their
+// FF FF FF FF row-start markers, columns by colidx (1-based → col = colidx-1).
+// Cell text and every other byte are left untouched, so only colours change and
+// the decompressed length is preserved. Returns the number of slots recoloured.
+func recolourCellPacket(b []byte, cols []Column, fn func(row, col int) int) int {
+	ncol := len(cols)
+	if ncol == 0 {
+		return 0
+	}
+	type start struct{ off, rownum int }
+	var starts []start
+	for pos := 0; ; {
+		j := bytes.Index(b[pos:], cellRowMarker)
+		if j < 0 {
+			break
+		}
+		q := pos + j
+		pos = q + 4
+		if q+12 > len(b) {
+			continue
+		}
+		if binary.LittleEndian.Uint32(b[q+8:q+12]) != 0 {
+			continue
+		}
+		if rn := binary.LittleEndian.Uint32(b[q+4 : q+8]); rn != 0 && rn <= 1<<20 {
+			starts = append(starts, start{q, int(rn)})
+		}
+	}
+	patched := 0
+	for r, st := range starts {
+		for k := 0; k <= ncol+1; k++ {
+			slot := st.off + k*cellSlot
+			if slot+cellSlotHdr > len(b) {
+				break
+			}
+			if bytes.Equal(b[slot:slot+4], cellRowMarker) {
+				if k == 0 {
+					continue // this row's own marker slot
+				}
+				break // the next row's marker
+			}
+			colidx := int(binary.LittleEndian.Uint32(b[slot : slot+4]))
+			if colidx < 1 || colidx > ncol {
+				continue
+			}
+			binary.LittleEndian.PutUint32(b[slot+8:slot+12], uint32(fn(r, colidx-1)))
+			patched++
+		}
+	}
+	return patched
+}
+
 // buildCatalog serializes columns into fixed catalogRecordSize records that
 // parseCatalog reads back. The field name is written at the three offsets a
 // live catalog repeats it at; the width and type sit where parseCatalog looks.

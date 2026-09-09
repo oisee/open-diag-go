@@ -232,6 +232,154 @@ func TestGridRoundTrip(t *testing.T) {
 	}
 }
 
+// capturedColourGrid returns the real coloured-ALV RFC_TR value (APPL id 0x08)
+// from conn 1 frame #14 of the alvcolor capture — the 13429-byte grid of
+// AAAAAA/BBBBBB… demo cells — or skips when the (gitignored) capture is absent.
+// Only the public demo cells are read; nothing is embedded.
+func capturedColourGrid(t *testing.T) []byte {
+	t.Helper()
+	const path = "../../captures/alvcolor.jsonl"
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("capture not present (gitignored); skipping coloured-grid test")
+	}
+	cap, err := replay.Load(path, 1)
+	if err != nil {
+		t.Skipf("capture load: %v", err)
+	}
+	for _, f := range cap.Server {
+		if f.Index != 14 {
+			continue
+		}
+		m, err := diag.ParseMessage(f.Data, false)
+		if err != nil {
+			continue
+		}
+		for _, it := range diag.ParseItems(m.Body) {
+			if it.Type != diag.ItemAPPL || it.ID != 0x08 {
+				continue
+			}
+			if g, err := DecodeGrid(it.Value); err == nil && len(g.Rows) > 0 {
+				return append([]byte(nil), it.Value...)
+			}
+		}
+	}
+	t.Skip("no coloured ALV grid at conn 1 frame #14")
+	return nil
+}
+
+// TestPatchColoursCaptured recolours a REAL captured coloured-ALV RFC_TR value
+// and pins the two guarantees of the template+swap approach: DecodeGrid reads
+// back the same cell text with our colours, and every byte outside the single
+// re-Compressed stream (and its 4-byte length prefix) is untouched.
+func TestPatchColoursCaptured(t *testing.T) {
+	orig := capturedColourGrid(t)
+
+	before, err := DecodeGrid(orig)
+	if err != nil {
+		t.Fatalf("DecodeGrid(orig): %v", err)
+	}
+
+	// A colour that varies per cell and exercises the flags, distinct from the
+	// captured (row+col) pattern so a stale packet would be caught.
+	fn := func(row, col int) int { return ColourField((row*2+col)%7+1, false, true) }
+
+	patched, err := PatchColours(orig, fn)
+	if err != nil {
+		t.Fatalf("PatchColours: %v", err)
+	}
+
+	after, err := DecodeGrid(patched)
+	if err != nil {
+		t.Fatalf("DecodeGrid(patched): %v", err)
+	}
+
+	if len(after.Rows) != len(before.Rows) {
+		t.Fatalf("row count changed: %d -> %d", len(before.Rows), len(after.Rows))
+	}
+	for r := range before.Rows {
+		for c := range before.Rows[r] {
+			if after.Rows[r][c] != before.Rows[r][c] {
+				t.Errorf("cell[%d][%d] text changed: %q -> %q", r, c, before.Rows[r][c], after.Rows[r][c])
+			}
+			if want := fn(r, c); after.Colours[r][c] != want {
+				t.Errorf("cell[%d][%d] colour: got %d want %d", r, c, after.Colours[r][c], want)
+			}
+		}
+	}
+
+	// Byte preservation: the only change is one LZH stream's span plus the
+	// 4-byte compressed-length prefix in front of its header.
+	p := commonPrefix(orig, patched)
+	s := commonSuffix(orig, patched)
+	loMid, hiMid := p, len(orig)-s // the changed middle of the original
+	if loMid >= hiMid {
+		t.Fatalf("no change detected (prefix=%d suffix=%d) — patch did nothing", p, s)
+	}
+	covered := false
+	for pos := 0; ; {
+		j := bytes.Index(orig[pos:], lzhMagic)
+		if j < 0 {
+			break
+		}
+		hdr := pos + j - 4
+		pos = pos + j + len(lzhMagic)
+		if hdr < lzhCompLen {
+			continue
+		}
+		if hdr-lzhCompLen <= loMid && hiMid <= chunkedStreamEnd(orig, hdr) {
+			covered = true
+			break
+		}
+	}
+	if !covered {
+		t.Errorf("changed region [%d..%d) is not confined to one stream + its length prefix", loMid, hiMid)
+	}
+	t.Logf("orig=%d bytes, patched=%d bytes; changed only [%d..%d) (one stream + length prefix)",
+		len(orig), len(patched), loMid, hiMid)
+
+	// RecolourGrid is the convenience form and must agree with PatchColours.
+	grid := make([][]int, len(before.Rows))
+	for r := range before.Rows {
+		grid[r] = make([]int, len(before.Rows[r]))
+		for c := range before.Rows[r] {
+			grid[r][c] = fn(r, c)
+		}
+	}
+	viaGrid, err := RecolourGrid(orig, grid)
+	if err != nil {
+		t.Fatalf("RecolourGrid: %v", err)
+	}
+	if !bytes.Equal(viaGrid, patched) {
+		t.Errorf("RecolourGrid and PatchColours disagree (%d vs %d bytes)", len(viaGrid), len(patched))
+	}
+}
+
+func commonPrefix(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
+func commonSuffix(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[len(a)-1-i] != b[len(b)-1-i] {
+			return i
+		}
+	}
+	return n
+}
+
 func padLeft(n int) string {
 	s := ""
 	for i := 0; i < 10; i++ {
