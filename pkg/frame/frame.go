@@ -147,11 +147,17 @@ func (s *Screen) Checkbox(row, col int, name, label string, on bool) *Screen {
 
 // Button places a pushbutton of the given width with a function code.
 func (s *Screen) Button(row, col, width int, caption, fcode string) *Screen {
+	return s.ButtonH(row, col, width, 1, caption, fcode)
+}
+
+// ButtonH places a pushbutton height cells tall — a button can span more
+// than one row.
+func (s *Screen) ButtonH(row, col, width, height int, caption, fcode string) *Screen {
 	if !strings.HasPrefix(fcode, "=") {
 		fcode = "=" + fcode
 	}
 	s.atoms = append(s.atoms, diag.Atom{EType: diag.AtomPushbutton, Row: row, Col: col,
-		Attr: diag.AttrYes3D, Length: width, Height: 1, Text: caption, Function: upper(fcode), Status: diag.Confirmed})
+		Attr: diag.AttrYes3D, Length: width, Height: height, Text: caption, Function: upper(fcode), Status: diag.Confirmed})
 	return s
 }
 

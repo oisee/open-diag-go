@@ -147,3 +147,44 @@ func FindPopup(path string) []byte {
 	}
 	return nil
 }
+
+// FindListWrap scans a whole capture for a plain classic-list frame — a
+// server frame whose list segments include "end of list", the marker of a
+// WRITE report rather than a data-browser list with controls. Its bytes are
+// the wrapper a colourful list of ours reuses. Empty when none is found.
+func FindListWrap(path string) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		var l struct {
+			Dir string `json:"dir"`
+			Hex string `json:"hex"`
+		}
+		if json.Unmarshal(sc.Bytes(), &l) != nil || l.Dir != "S->C" || l.Hex == "" {
+			continue
+		}
+		data, err := hex.DecodeString(l.Hex)
+		if err != nil {
+			continue
+		}
+		m, err := diag.ParseMessage(data, false)
+		if err != nil {
+			continue
+		}
+		items := diag.ParseItems(m.Body)
+		if !diag.HasListSegments(items) {
+			continue
+		}
+		for _, seg := range diag.ParseListItems(items) {
+			if strings.Contains(strings.ToLower(seg.Text), "end of list") {
+				return data
+			}
+		}
+	}
+	return nil
+}

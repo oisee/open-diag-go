@@ -606,8 +606,9 @@ func widgetsScreen(t int) *frame.Screen {
 		// grows with depth, so the nearer ones look bigger, and the caption
 		// is centred in the wider box.
 		depth := (math.Sin(ang) + 1.0) / 2.0
-		w := 6 + int(depth*12.0) // 6 wide at the back, 18 at the front
-		scr.Button(row, col, w, centre(lab, w-2), fmt.Sprintf("=B%d", i))
+		w := 6 + int(depth*12.0)    // 6 wide at the back, 18 at the front
+		h := 1 + int(depth*2.0+0.5) // 1 row at the back, up to 3 at the front
+		scr.ButtonH(row, col, w, h, centre(lab, w-2), fmt.Sprintf("=B%d", i))
 	}
 	scr.Text(int(cy), int(cx)-3, "( o )")
 	scr.Text(25, 2, fmt.Sprintf("frame %d   3 buttons orbiting CCW   F3/Back stops", t))

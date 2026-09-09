@@ -75,3 +75,29 @@ func Events(items []Item) []Event {
 	}
 	return out
 }
+
+// StatusMessage builds the item that shows a message in the status bar and
+// makes the GUI play the sound of its type — VARINFO.03 (APPL 0x0c/0x03).
+// Its first byte is the message type (S, W, E, I), which is what the sound
+// hangs off, followed by a message id and number and the text. The layout
+// was read off the wire: type, a NUL, a two-character class padded with
+// spaces, a NUL, the number "001", a NUL, a space, a NUL, then the text.
+func StatusMessage(msgType byte, text string) Item {
+	v := []byte{msgType, 0x00}
+	v = append(v, '0', '0')                        // message class
+	v = append(v, []byte("                  ")...) // padded to the width the wire used
+	v = append(v, 0x00)
+	v = append(v, '0', '0', '1') // message number
+	v = append(v, 0x00, 0x20, 0x00)
+	v = append(v, []byte(text)...)
+	return Item{Type: ItemAPPL, ID: 0x0c, SID: 0x03, Value: v}
+}
+
+// Message types for StatusMessage. Each maps to a sound in the GUI's sound
+// scheme: Success-Msg, Warning-Msg, Error-Msg.
+const (
+	MsgSuccess = 'S'
+	MsgWarning = 'W'
+	MsgError   = 'E'
+	MsgInfo    = 'I'
+)
