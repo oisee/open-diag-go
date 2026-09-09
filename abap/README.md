@@ -10,3 +10,15 @@ SAP GUI pointed at the machine running tap (system number 00), logon, SE38,
 ZODGP_PROBE, F8, twenty ticks, then the tick box off and back. `lens
 captures/probe.jsonl -only S->C` shows the frames the server sent between
 keystrokes.
+
+Screen 0100 is not made in the screen painter: `abap/screen_0100.json` is
+handed to `RPY_DYNPRO_INSERT` through ZADT_VSP's function bridge
+(`vsp -s <sandbox> debug`, then `call RPY_DYNPRO_INSERT HEADER={…}
+CONTAINERS=[…] FIELDS_TO_CONTAINERS=[…] FLOW_LOGIC=[…] SUPPRESS_CORR_CHECKS=X
+SUPPRESS_EXIST_CHECKS=X SUPPRESS_GENERATE=X SUPPRESS_EXTENDED_CHECKS=X`, the
+JSON compact). Two things the function does not say: fields belong to a
+container, and the `SCREEN` container has to be declared in `CONTAINERS` or
+every field is dropped without a word; and a field's `TEXT` is its template
+(`_________V` for a right-justified INT4), the vocabulary being `TEXT`,
+`TEMPLATE`, `CHECK`, `OKCODE` in `TYPE`, read off a generated selection
+screen with `RPY_DYNPRO_READ`.

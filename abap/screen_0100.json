@@ -1,0 +1,88 @@
+{
+ "CONTAINERS": [
+  {
+   "TYPE": "SCREEN",
+   "NAME": "SCREEN",
+   "LINE": "000",
+   "COLUMN": "000",
+   "LENGTH": "000",
+   "HEIGHT": "000"
+  }
+ ],
+ "HEADER": {
+  "PROGRAM": "ZODGP_PROBE",
+  "SCREEN": "0100",
+  "LANGUAGE": "E",
+  "DESCRIPT": "odgp probe: the count",
+  "TYPE": "N",
+  "NEXTSCREEN": "0100",
+  "LINES": "027",
+  "COLUMNS": "120"
+ },
+ "FIELDS_TO_CONTAINERS": [
+  {
+   "CONT_TYPE": "SCREEN",
+   "CONT_NAME": "SCREEN",
+   "TYPE": "TEXT",
+   "NAME": "TXT_TICKS",
+   "TEXT": "Ticks",
+   "LINE": "002",
+   "COLUMN": "002",
+   "LENGTH": "005",
+   "VISLENGTH": "005",
+   "HEIGHT": "001",
+   "FORMAT": "CHAR"
+  },
+  {
+   "CONT_TYPE": "SCREEN",
+   "CONT_NAME": "SCREEN",
+   "TYPE": "TEMPLATE",
+   "NAME": "GV_TICKS",
+   "TEXT": "_________V",
+   "LINE": "002",
+   "COLUMN": "010",
+   "LENGTH": "010",
+   "VISLENGTH": "010",
+   "HEIGHT": "001",
+   "FORMAT": "INT4",
+   "OUTPUT_FLD": "X",
+   "OUTPUTONLY": "X",
+   "RIGHT_JUST": "X"
+  },
+  {
+   "CONT_TYPE": "SCREEN",
+   "CONT_NAME": "SCREEN",
+   "TYPE": "OKCODE",
+   "NAME": "OK_CODE",
+   "TEXT": "____________________",
+   "LINE": "000",
+   "COLUMN": "000",
+   "LENGTH": "020",
+   "VISLENGTH": "020",
+   "HEIGHT": "001",
+   "FORMAT": "CHAR",
+   "INPUT_FLD": "X"
+  }
+ ],
+ "FLOW_LOGIC": [
+  {
+   "LINE": "PROCESS BEFORE OUTPUT."
+  },
+  {
+   "LINE": "  MODULE status_0100."
+  },
+  {
+   "LINE": "*"
+  },
+  {
+   "LINE": "PROCESS AFTER INPUT."
+  },
+  {
+   "LINE": "  MODULE user_command_0100."
+  }
+ ],
+ "SUPPRESS_CORR_CHECKS": "X",
+ "SUPPRESS_EXIST_CHECKS": "X",
+ "SUPPRESS_GENERATE": "X",
+ "SUPPRESS_EXTENDED_CHECKS": "X"
+}

@@ -1,40 +1,39 @@
 *&---------------------------------------------------------------------*
-*& Phase 0 probe: a screen that redraws itself on an aRFC timer.
+*& Phase 0 probe: a dynpro that redraws itself on an aRFC timer.
 *&---------------------------------------------------------------------*
-*& Start it, leave the selection screen alone, and watch the counter
-*& move. Every tick is one roundtrip the GUI made without a key being
-*& pressed: whatever the server sent to make it do that is the kick,
-*& and tap/lens are there to catch it. Stop with the tick box.
+*& The selection screen takes the interval; screen 0100 shows one
+*& number. PBO arms the timer, the timer's end makes the GUI send a PAI
+*& without a key being pressed — that roundtrip is what the capture is
+*& after — PAI counts it and the next PBO arms again. Back, Exit or
+*& Cancel leave. Screen 0100: abap/screen_0100.json.
 *&---------------------------------------------------------------------*
 REPORT zodgp_probe.
 
-PARAMETERS: p_ms    TYPE i DEFAULT 300,
-            p_run   TYPE abap_bool AS CHECKBOX DEFAULT 'X',
-            p_ticks TYPE i MODIF ID dsp,
-            p_time  TYPE c LENGTH 12 MODIF ID dsp,
-            p_bar   TYPE c LENGTH 40 MODIF ID dsp.
+PARAMETERS: p_ms  TYPE i DEFAULT 300,
+            p_run TYPE abap_bool AS CHECKBOX DEFAULT abap_true.
 
-DATA gv_armed TYPE abap_bool.
+DATA: gv_ticks TYPE i,
+      gv_armed TYPE abap_bool,
+      ok_code  TYPE sy-ucomm.
 
-AT SELECTION-SCREEN OUTPUT.
-  LOOP AT SCREEN.
-    IF screen-group1 = 'DSP'.
-      screen-input = 0.
-      MODIFY SCREEN.
-    ENDIF.
-  ENDLOOP.
+START-OF-SELECTION.
+  CALL SCREEN 100.
+
+MODULE status_0100 OUTPUT.
+  SET PF-STATUS space.
+  SET TITLEBAR space.
   IF p_run = abap_true AND gv_armed = abap_false.
     PERFORM arm.
   ENDIF.
+ENDMODULE.
 
-AT SELECTION-SCREEN.
-  " A PAI: the user's, or the one the timer made the GUI send.
-  IF sy-ucomm = 'ONLI' OR sy-ucomm = 'CRET'.
-    LEAVE PROGRAM.
-  ENDIF.
-  IF p_run <> abap_true.
-    gv_armed = abap_false.
-  ENDIF.
+MODULE user_command_0100 INPUT.
+  CASE ok_code.
+    WHEN 'BACK' OR 'EXIT' OR 'CANC'.
+      LEAVE PROGRAM.
+  ENDCASE.
+  CLEAR ok_code.
+ENDMODULE.
 
 FORM arm.
   CALL FUNCTION 'ZODGP_TIMER'
@@ -47,10 +46,6 @@ ENDFORM.
 
 FORM on_tick USING iv_task TYPE clike.
   RECEIVE RESULTS FROM FUNCTION 'ZODGP_TIMER'.
-  p_ticks = p_ticks + 1.
-  p_time = sy-uzeit.
-  DATA(lv_pos) = p_ticks MOD 40.
-  CLEAR p_bar.
-  p_bar+lv_pos(1) = '#'.
+  gv_ticks = gv_ticks + 1.
   gv_armed = abap_false.
 ENDFORM.
