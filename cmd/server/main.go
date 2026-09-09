@@ -614,18 +614,23 @@ func itemKeys(items []diag.Item) string {
 // key's identity (which arrives as a named UI event, not always a function
 // code) is visible. Housekeeping items (session, user, system) are skipped.
 func itemVals(items []diag.Item) string {
-	var parts []string
+	var events, rest []string
 	for _, it := range items {
 		k := it.Key()
-		keep := strings.Contains(k, "UI_EVENT") ||
-			strings.Contains(k, "VARINFO.04") || strings.Contains(k, "VARINFO.06") ||
-			strings.Contains(k, "VARINFO.08") || strings.Contains(k, "VARINFO.09") ||
-			strings.HasPrefix(k, "APPL DYNT")
-		if keep && len(it.Value) > 0 {
-			parts = append(parts, fmt.Sprintf("%s=%s", k, showVal(it.Value)))
+		if len(it.Value) == 0 {
+			continue
+		}
+		switch {
+		case strings.Contains(k, "UI_EVENT"), strings.Contains(k, "VARINFO.04"):
+			// The action channels — the OK-code and the control events — go
+			// first, since they are what a keypress or a click carries.
+			events = append(events, fmt.Sprintf("%s=%s", k, showVal(it.Value)))
+		case strings.Contains(k, "VARINFO.06"), strings.Contains(k, "VARINFO.08"),
+			strings.Contains(k, "VARINFO.09"), strings.HasPrefix(k, "APPL DYNT"):
+			rest = append(rest, fmt.Sprintf("%s=%s", k, showVal(it.Value)))
 		}
 	}
-	return strings.Join(parts, "  ")
+	return strings.Join(append(events, rest...), "  ")
 }
 
 // showVal is a value as printable text, with a hex tail for a short one so a
