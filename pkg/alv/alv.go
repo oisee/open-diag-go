@@ -653,7 +653,12 @@ func patchCellPath(container []byte, cols []Column, fn func(row, col int) int, d
 		if err != nil {
 			return container, false
 		}
-		newChunked := chunkRFC(recomp)
+		// Pad the re-chunked stream back to the original stream's exact byte
+		// span, so the total RFC_TR value length never changes and no outer
+		// size/offset the GUI keeps is disturbed. The length prefix still names
+		// the true compressed length, so a decoder reads that and ignores the
+		// zero padding beyond it.
+		newChunked := padChunkedTo(chunkRFC(recomp), end-hdr)
 		out := make([]byte, 0, len(container)-(end-hdr)+len(newChunked))
 		out = append(out, container[:hdr]...)
 		out = append(out, newChunked...)
@@ -666,6 +671,40 @@ func patchCellPath(container []byte, cols []Column, fn func(row, col int) int, d
 		return out, true
 	}
 	return container, false
+}
+
+// padChunkedTo grows a chunked stream to exactly target bytes by inserting
+// zero-payload RFC-row chunks (≤ rfcRowPayload each) before its terminator, so
+// the stream keeps its 03 05 markers and terminator but occupies the original
+// span. Returns the input unchanged if it cannot land on target exactly.
+func padChunkedTo(chunked []byte, target int) []byte {
+	if len(chunked) < 6 || len(chunked) >= target {
+		return chunked
+	}
+	body := chunked[:len(chunked)-6] // everything before the 6-byte terminator
+	term := chunked[len(chunked)-6:]
+	need := target - len(chunked)
+	out := append([]byte(nil), body...)
+	for need >= 6 {
+		p := need - 6
+		if p > rfcRowPayload {
+			p = rfcRowPayload
+		}
+		if rem := need - (6 + p); rem > 0 && rem < 6 {
+			p -= 6 - rem // keep the remainder ≥ 6 so the next chunk fits
+		}
+		if p < 0 {
+			break
+		}
+		out = append(out, rowMarker...)
+		out = binary.BigEndian.AppendUint16(out, uint16(p))
+		out = append(out, make([]byte, p)...)
+		need -= 6 + p
+	}
+	if need != 0 {
+		return chunked // could not pad to an exact fit; leave it shorter
+	}
+	return append(out, term...)
 }
 
 // chunkedStreamEnd returns the offset just past a chunked stream's terminator
