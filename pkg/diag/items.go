@@ -25,9 +25,12 @@ const (
 )
 
 // fixedLen is the value length of the item types that carry no length
-// field. Inferred.
+// field. Inferred, except CHL: it was 3 here until the ALV capture showed
+// the next item's type byte 22 bytes after the CHL byte, in both
+// directions and on every CHL of the capture, which is also pysap's
+// length. With 3 the rest of every frame with a CHL came out raw.
 var fixedLen = map[byte]int{
-	ItemSES: 16, ItemICO: 20, ItemTIT: 3, ItemMessage: 76, ItemOKC: 1, ItemCHL: 3,
+	ItemSES: 16, ItemICO: 20, ItemTIT: 3, ItemMessage: 76, ItemOKC: 1, ItemCHL: 22,
 	ItemSFE: 3, ItemSBA: 2, ItemEOM: 0, ItemSLC: 2, ItemSBA2: 9,
 }
 
@@ -91,6 +94,18 @@ func ParseItems(body []byte) []Item {
 			}
 			items = append(items, Item{Offset: i, Type: t, ID: id, SID: sid, Value: body[start : start+n], Status: Inferred})
 			i = start + n
+		case ItemXML:
+			// Type, a four-byte big-endian length, the document. Confirmed on
+			// the Phase 0 capture: 11 00000035 <?xml …><DATAMANAGER/>.
+			if i+5 > len(body) {
+				return append(items, Item{Offset: i, Type: t, Value: body[i:], Status: Raw})
+			}
+			n := beUint32(body[i+1:])
+			if i+5+n > len(body) {
+				return append(items, Item{Offset: i, Type: t, Value: body[i+5:], Status: Raw})
+			}
+			items = append(items, Item{Offset: i, Type: t, Value: body[i+5 : i+5+n], Status: Confirmed})
+			i += 5 + n
 		default:
 			n, ok := fixedLen[t]
 			if !ok || i+1+n > len(body) {

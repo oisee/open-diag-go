@@ -1,4 +1,10 @@
+# Captures hold a live session (logon scramble, screen data) — never commit.
 captures/*.jsonl
+captures/*.log
 *.jsonl
+# Built binaries.
 /tap
 /lens
+/server
+/C
+odgp-server

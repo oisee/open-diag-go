@@ -111,6 +111,9 @@ func main() {
 				fmt.Printf("  %s  %q", hex.EncodeToString(v), printable(v))
 			}
 			fmt.Println()
+			if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+				printAtoms(it.Value)
+			}
 		}
 		for key := range previous[l.Dir] {
 			if _, ok := now[key]; !ok && (*grep == "" || strings.Contains(key, *grep)) {
@@ -118,6 +121,25 @@ func main() {
 			}
 		}
 		previous[l.Dir] = now
+	}
+}
+
+// printAtoms prints a DYNT_ATOM item as its atoms, one per line, with the
+// screen painter's 1-based line and column.
+func printAtoms(value []byte) {
+	atoms, err := diag.ParseDyntAtoms(value)
+	for _, a := range atoms {
+		text := a.Value()
+		switch a.EType {
+		case diag.AtomPushbutton:
+			text = fmt.Sprintf("%s -> %s", text, a.Function)
+		case diag.AtomCheckbox, diag.AtomRadioButton:
+			text = fmt.Sprintf("[%c] %s", a.State, text)
+		}
+		fmt.Printf("       @%-4d line %2d col %3d len %3d  %-8s attr=%02x  %s  %q\n", a.Offset, a.Row+1, a.Col+1, a.Length, a.TypeName(), a.Attr, a.Status, text)
+	}
+	if err != nil {
+		fmt.Printf("       %v\n", err)
 	}
 }
 
