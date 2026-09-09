@@ -25,6 +25,7 @@ import (
 
 	"github.com/oisee/open-rfc-go/ni"
 
+	"github.com/oisee/open-diag-go-pro/pkg/alv"
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
 	"github.com/oisee/open-diag-go-pro/pkg/frame"
 	"github.com/oisee/open-diag-go-pro/pkg/replay"
@@ -34,6 +35,46 @@ var capturePath string
 var animMsgType byte
 var animMsgLoop int
 var demoSceneMS int
+var recolorOn bool
+
+// maybeRecolor patches the colours of any ALV grid a frame carries with our own
+// pattern, so a replayed grid shows the colours we choose. It returns nil when
+// the frame has no decodable grid, leaving it untouched.
+func maybeRecolor(data []byte, log func(string, ...any)) []byte {
+	m, err := diag.ParseMessage(data, false)
+	if err != nil {
+		return nil
+	}
+	items := diag.ParseItems(m.Body)
+	changed := false
+	for i, it := range items {
+		if it.ID != 0x08 { // RFC_TR
+			continue
+		}
+		if g, e := alv.DecodeGrid(it.Value); e != nil || len(g.Rows) == 0 {
+			continue
+		}
+		patched, pe := alv.PatchColours(it.Value, func(row, col int) int {
+			// A distinctive diagonal, clearly ours, so a live test is unambiguous.
+			return alv.ColourField((row*2+col*3)%7+1, true, false)
+		})
+		if pe == nil {
+			items[i].Value = patched
+			changed = true
+			log("recoloured an ALV grid (%d cols, %d rows)", len(g.Cols), len(g.Rows))
+		}
+	}
+	if !changed {
+		return nil
+	}
+	h := m.Header
+	h.Compress = 0
+	out, err := diag.EncodeMessage(h, items, false)
+	if err != nil {
+		return nil
+	}
+	return out
+}
 
 func main() {
 	listen := flag.String("listen", ":3201", "address SAP GUI connects to")
@@ -47,10 +88,12 @@ func main() {
 	msgType := flag.String("msg-type", "E", "status message to trigger a sound under the animation: S, W, E or I (empty = none)")
 	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame)")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene of the demo mode runs, in milliseconds (wall clock, not frames)")
+	recolor := flag.Bool("recolor", false, "patch the colours of any ALV grid in a replayed frame with our own pattern")
 	flag.Parse()
 
 	capturePath = *capture
 	demoSceneMS = *sceneMS
+	recolorOn = *recolor
 	cap, err := replay.Load(*capture, *conn)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "server:", err)
@@ -212,6 +255,12 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	}
 	log("connected")
 	send := func(what string, data []byte) error {
+		if recolorOn {
+			if p := maybeRecolor(data, log); p != nil {
+				data = p
+				what += " [recoloured]"
+			}
+		}
 		plain, err := replay.Plain(data)
 		if err != nil {
 			log("%s: cannot flatten (%v); sending as captured", what, err)
