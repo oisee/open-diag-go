@@ -1632,7 +1632,7 @@ var ledSpectrum = []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.Co
 // The LED grid is LOGICAL: ledRows x ledCols cells, each drawn as a bw x bh
 // block of character cells (§ ledSegments), so the display is big and chunky
 // while the run count stays tied to this logical resolution.
-const ledRows, ledCols = 16, 52
+const ledRows, ledCols = 10, 22
 
 var ledEffects = []string{"plasma", "rings", "ball"}
 
@@ -1684,7 +1684,7 @@ func clampi(v, lo, hi int) int {
 // logical LED is drawn as a bw x bh character block; the effect cycles every
 // few seconds among plasma, rings and a bouncing ball.
 func ledSegments(n int) []diag.ListSegment {
-	const bw, bh = 2, 2
+	const bw, bh = 4, 2
 	eff := (n / 45) % len(ledEffects) // ~8s per effect at the led cadence
 	segs := []diag.ListSegment{
 		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED display: colour + letters (RLE)"),
