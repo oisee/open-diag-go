@@ -1,9 +1,5 @@
-FUNCTION zodgp_timer.
-*"----------------------------------------------------------------------
-*"*"Local Interface:
-*"  IMPORTING
-*"     VALUE(IV_MS) TYPE  I DEFAULT 300
-*"----------------------------------------------------------------------
+FUNCTION zodgp_timer
+  IMPORTING VALUE(iv_ms) TYPE i DEFAULT 300.
   " The timer behind the probe: started as an asynchronous RFC, it does
   " nothing but wait, and its completion is what makes the GUI do a
   " roundtrip. Remote-enabled, because STARTING NEW TASK needs that.
