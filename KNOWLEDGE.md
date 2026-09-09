@@ -54,7 +54,11 @@ per-keystroke stream, no key-held.
 - **Function keys / menu shortcuts** fire a PAI **only if the screen's GUI
   status maps them** (§6). Without a status they produce a contentless PAI —
   proven with the `echo` mode: pressing F-keys / PgUp / PgDn on a status-less
-  screen changed nothing in the frame.
+  screen changed nothing in the frame. A second sniff confirmed it: pressing
+  keys on standard screens sent mostly cursor/scroll (`%_GS 0 1`, `%_GC r c`)
+  and system commands, not function codes — **only a registered function sends
+  a `=STRING`.** How a key is registered so a chosen string is sent is §8's
+  open thread.
 - **Arrow keys, letters, mouse-move** are not sent per press — arrows move the
   cursor locally; letters go into fields and travel with the next PAI.
 
