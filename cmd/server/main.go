@@ -923,12 +923,20 @@ func loginFields(scr *frame.Screen, top, left, idx int) {
 // same output-field-with-icon the real screen uses. Placeholder values only,
 // never the captured credentials.
 func nativeLogon(scr *frame.Screen) {
-	loginFields(scr, 1, 2, 0)
-	scr.Frame(1, 40, 46, 20, "Information")
-	scr.Output(2, 42, 66, "INFO0", "@0S@ ABAP Cloud Developer Trial 2023 initial shipment", false)
-	scr.Output(4, 42, 66, "INFO1", "@0S@ Since ABAP Cloud Developer Trial is a free offering for education", false)
-	scr.Output(5, 42, 66, "INFO2", "and demo purposes only, we offer it with SAP Community support.", false)
-	scr.Output(6, 42, 66, "INFO3", "That means that no primary support is available for this product.", false)
+	// Exactly the capture's layout: fields at row 0/2/3/5, label col 1 and
+	// input col 20, and the Information box at row 0 col 35, 56 wide and 19
+	// tall — the real dimensions, so it is compact, not a page-tall panel.
+	loginFields(scr, 0, 1, 0)
+	scr.Frame(0, 35, 56, 19, "Information")
+	scr.Output(1, 37, 52, "INFO0", "@0S@ ABAP Cloud Developer Trial 2023 initial shipment", false)
+	scr.Output(3, 37, 52, "INFO1", "@0S@ Since ABAP Cloud Developer Trial is a free offering", false)
+	scr.Output(4, 37, 52, "INFO2", "for education and demo purposes only, we offer it with", false)
+	scr.Output(5, 37, 52, "INFO3", "SAP Community support. That means that no primary", false)
+	scr.Output(6, 37, 52, "INFO4", "support is available for this product.", false)
+	// The standard logon actions. On the real screen these ride the GUI status
+	// bar above the canvas, which we do not synthesize, so they sit as buttons
+	// on the canvas as a stand-in.
+	scr.Button(8, 1, 18, "New password", "=NEWPW")
 }
 
 // orbitLogins draws count logon forms orbiting a centre at the given angle,
