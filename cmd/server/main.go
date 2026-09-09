@@ -88,7 +88,7 @@ func main() {
 		}
 		if *mode == "iconanim" || *mode == "led" {
 			if *pushMS == 300 {
-				cad = 130 * time.Millisecond // gentle default for a pushed list
+				cad = 180 * time.Millisecond // gentle default for a pushed list
 			}
 			if cad < 80*time.Millisecond {
 				cad = 80 * time.Millisecond
@@ -1624,7 +1624,7 @@ func ledRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte {
 // travelling plasma over it, so col/row cells light in different colours — the
 // classic list as an LED display. Each cell is 2 chars wide so it reads square.
 func ledSegments(n int) []diag.ListSegment {
-	const rows, cols, cw = 14, 26, 2
+	const rows, cols, cw = 10, 18, 3
 	// The vivid end of the list palette — these fill the cell as a colour block.
 	palette := []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.ColTotal, diag.ColNegative, diag.ColGroup}
 	segs := []diag.ListSegment{
