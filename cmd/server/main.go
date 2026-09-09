@@ -208,7 +208,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -275,7 +275,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "showcase") && pushing == nil {
+			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "showcase" || mode == "states") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -323,6 +323,46 @@ var counterText = regexp.MustCompile(`\x20{4,9}[0-9]{1,6}\x20`)
 // replaced, the header's stat=f0 kept as the capture had it.
 // renderer picks how the pushed frames are built: synth from our own
 // frame.Screen, or a patch of a captured frame.
+// statesScreen shows an input field in each state we can set: active,
+// protected (inactive), hidden, and value-help (F4). The hidden one is
+// there but not drawn; the F4 one shows the matchcode button.
+func statesScreen() *frame.Screen {
+	return frame.New(27, 120).
+		Frame(0, 0, 64, 11, "Input field states").
+		Text(1, 2, "active").Input(1, 20, 20, "S_ACT", "type here").
+		Text(2, 2, "inactive").InputProtected(2, 20, 20, "S_INA", "cannot edit").
+		Text(3, 2, "hidden").InputHidden(3, 20, 20, "S_HID", "secret").
+		Text(3, 44, "(hidden field is here, not shown)").
+		Text(4, 2, "F4 help").InputF4(4, 20, 20, "S_F4", "press F4").
+		Text(6, 2, "protected is grey, active is white, F4 shows the dropdown")
+}
+
+// statesRenderer wraps the located screen frame and swaps in the states screen.
+func statesRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			items[i].Value = statesScreen().Encode()
+			h := m.Header
+			h.Compress = 0
+			out, err := diag.EncodeMessage(h, items, false)
+			if err != nil {
+				return func(int) []byte { return nil }
+			}
+			return func(int) []byte { return out }
+		}
+	}
+	return func(int) []byte { return nil }
+}
+
 // showcaseScreen draws one of every element the encoder knows, so a real
 // GUI and the TUI both show the whole vocabulary at once.
 func showcaseScreen() *frame.Screen {
@@ -481,6 +521,8 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log 
 		return listRenderer(cap, screenFrame, log)
 	case "showcase":
 		return showcaseRenderer(cap, screenFrame, log)
+	case "states":
+		return statesRenderer(cap, screenFrame, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }

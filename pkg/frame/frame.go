@@ -81,6 +81,45 @@ func (s *Screen) Input(row, col, width int, name, value string) *Screen {
 	return s
 }
 
+// The state of an input field is its attribute bits: active is editable,
+// protected is shown but not editable, hidden is invisible, and F4 adds the
+// value-help (matchcode) the user opens with F4.
+
+// InputProtected is an inactive input — the value shows, the user cannot
+// change it.
+func (s *Screen) InputProtected(row, col, width int, name, value string) *Screen {
+	row, col, width, value = s.clip(row, col, width, padValue(value, width, false))
+	s.atoms = append(s.atoms,
+		diag.Atom{EType: diag.AtomInputField, Row: row, Col: col, Attr: diag.AttrProtected,
+			Length: len(value), VisibleLength: width, MaxChars: width, Text: value, Status: diag.Confirmed},
+		diag.FieldName(row, col, upper(name), diag.AttrProtected))
+	return s
+}
+
+// InputHidden is an invisible input — present on the screen, its value not
+// shown (a password field is the same, INVISIBLE set).
+func (s *Screen) InputHidden(row, col, width int, name, value string) *Screen {
+	row, col, width, value = s.clip(row, col, width, padValue(value, width, false))
+	attr := byte(diag.AttrYes3D | diag.AttrInvisible)
+	s.atoms = append(s.atoms,
+		diag.Atom{EType: diag.AtomInputField, Row: row, Col: col, Attr: attr,
+			Length: len(value), VisibleLength: width, MaxChars: width, Text: value, Status: diag.Inferred},
+		diag.FieldName(row, col, upper(name), attr))
+	return s
+}
+
+// InputF4 is an active input that offers value help — the matchcode button
+// the user opens with F4.
+func (s *Screen) InputF4(row, col, width int, name, value string) *Screen {
+	row, col, width, value = s.clip(row, col, width, padValue(value, width, false))
+	attr := byte(diag.AttrYes3D | diag.AttrMatchcode)
+	s.atoms = append(s.atoms,
+		diag.Atom{EType: diag.AtomInputField, Row: row, Col: col, Attr: attr,
+			Length: len(value), VisibleLength: width, MaxChars: width, Text: value, Status: diag.Inferred},
+		diag.FieldName(row, col, upper(name), attr))
+	return s
+}
+
 // Checkbox places a checkbox with its label.
 func (s *Screen) Checkbox(row, col int, name, label string, on bool) *Screen {
 	state := byte(' ')

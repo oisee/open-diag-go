@@ -161,3 +161,33 @@ func TestClip(t *testing.T) {
 		t.Errorf("clipped row 0 = %q, want %q", got, "Left")
 	}
 }
+
+func TestRenderInputStates(t *testing.T) {
+	atoms := []diag.Atom{
+		{EType: diag.AtomInputField, Row: 0, Col: 0, Attr: diag.AttrYes3D, VisibleLength: 6, Text: "ab"},
+		{EType: diag.AtomInputField, Row: 1, Col: 0, Attr: diag.AttrProtected, VisibleLength: 6, Text: "cd"},
+		{EType: diag.AtomInputField, Row: 2, Col: 0, Attr: diag.AttrYes3D | diag.AttrInvisible, VisibleLength: 6, Text: "secret"},
+		{EType: diag.AtomInputField, Row: 3, Col: 0, Attr: diag.AttrYes3D | diag.AttrMatchcode, VisibleLength: 4, Text: "x"},
+	}
+	g := Render(atoms, 5, 20)
+	rows := g.String()
+	if want := "ab____"; !containsRow(rows, want) {
+		t.Errorf("active row missing %q in\n%s", want, rows)
+	}
+	if containsRow(rows, "secret") {
+		t.Error("invisible field was drawn")
+	}
+	if !containsRow(rows, "x") || !containsAny(rows, "▾") {
+		t.Error("F4 marker missing")
+	}
+}
+
+func containsRow(s, sub string) bool { return containsAny(s, sub) }
+func containsAny(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

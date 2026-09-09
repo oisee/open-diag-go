@@ -141,9 +141,25 @@ func RenderList(segs []diag.ListSegment, minRows, minCols int) *Grid {
 func atomText(a diag.Atom) string {
 	switch a.EType {
 	case diag.AtomLabel, diag.AtomOutputField, diag.AtomFrame:
+		if a.Attr&diag.AttrInvisible != 0 {
+			return ""
+		}
 		return a.Value()
 	case diag.AtomInputField:
-		return inputText(a)
+		// The attribute bits change how a field looks: an invisible field
+		// draws nothing, a protected one shows its value without the
+		// editable underscores, and a value-help field gets an F4 marker.
+		if a.Attr&diag.AttrInvisible != 0 {
+			return ""
+		}
+		if a.Attr&diag.AttrProtected != 0 {
+			return a.Value()
+		}
+		t := inputText(a)
+		if a.Attr&diag.AttrMatchcode != 0 {
+			t += "▾"
+		}
+		return t
 	case diag.AtomCheckbox:
 		return checkBox(a.State) + " " + a.Value()
 	case diag.AtomRadioButton:
