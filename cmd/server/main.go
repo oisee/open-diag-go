@@ -263,7 +263,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "widgets" || mode == "demo" || mode == "snake" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "widgets" || mode == "demo" || mode == "snake" || mode == "echo" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -301,6 +301,13 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			// with the joke popup once, then accept the next click (any
 			// button) by closing.
 			if perr == nil && jokeStep == 0 && isClose(diag.ParseItems(m.Body)) {
+				// Stop any animation first: a running push loop would otherwise
+				// keep drawing over the log-off popup, and keep writing after the
+				// session ends. This is the /i reaction every mode now shares.
+				if pushing != nil {
+					close(pushing)
+					pushing = nil
+				}
 				if jp := jokePopup1(popup); jp != nil {
 					jokeStep = 1
 					_ = send("joke popup 1: Where are you going???", jp)
@@ -365,6 +372,30 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				if out, ok := appRespond(cap, screenFrame, st); ok {
 					_ = send(fmt.Sprintf("app screen, turn %d", st.turns), out)
+				}
+				continue
+			}
+			if mode == "echo" {
+				// No buttons: every client frame is a keypress or menu action.
+				// Show the function code it produced and the header flags, so a
+				// key's code is read straight off the screen. Enter and the
+				// standard function keys fire on any dynpro; a menu shortcut
+				// fires if the screen's status maps it.
+				st.turns++
+				if perr == nil {
+					items := diag.ParseItems(m.Body)
+					fc := funcCode(items)
+					evs := diag.Events(items)
+					line := fmt.Sprintf("#%d fcode=%q com=%02x type=%02x events=%d [%s]",
+						st.turns, fc, m.Header.ComFlag, m.Header.MsgType, len(evs), itemKeys(items))
+					st.echo = append(st.echo, line)
+					if len(st.echo) > 17 {
+						st.echo = st.echo[len(st.echo)-17:]
+					}
+					log("echo %s", line)
+				}
+				if out, ok := echoRespond(cap, screenFrame, st); ok {
+					_ = send("echo screen", out)
 				}
 				continue
 			}
@@ -1404,6 +1435,7 @@ type appState struct {
 	lastMS int
 	fields []diag.FieldValue
 	events []diag.Event
+	echo   []string // the echo server's recent-keypress log
 }
 
 // appScreen is the demo handler: it draws what the user has done. Each PAI
@@ -1430,6 +1462,31 @@ func appScreen(st *appState) *frame.Screen {
 		row++
 	}
 	return scr
+}
+
+// echoScreen shows what the GUI sent on the last few PAIs: the function code
+// (a key's or a menu entry's), the header flags, how many control events came,
+// and the item keys. It is how we read the keyboard — press a key, see the
+// code it produced — with no on-screen buttons at all.
+func echoScreen(st *appState) *frame.Screen {
+	scr := frame.New(27, 120).
+		Frame(0, 0, 110, 24, "odgp echo  --  press keys; this is what SAP GUI sent back").
+		Text(2, 2, "PAIs received").
+		Number(2, 20, 8, "GV_N", st.turns).
+		Text(3, 2, "press function keys, Enter, menu shortcuts (Ctrl/Shift+F..) — most recent first:")
+	row := 5
+	for i := len(st.echo) - 1; i >= 0 && row < 24; i-- {
+		scr.Text(row, 2, st.echo[i])
+		row++
+	}
+	scr.Text(25, 2, "close the window (the [X] / system close sends /i) to exit")
+	return scr
+}
+
+// echoRespond renders the echo screen into the located screen frame.
+func echoRespond(cap *replay.Capture, wrapFrame int, st *appState) ([]byte, bool) {
+	out := staticRespondWrap(cap, wrapFrame, echoScreen(st))
+	return out, out != nil
 }
 
 // appRespond builds one server frame for the app: the demo screen wrapped
