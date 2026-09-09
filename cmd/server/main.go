@@ -885,7 +885,6 @@ type scene struct {
 func demoScenes() []scene {
 	return []scene{
 		{"login", "a login form that sits, drifts a square, orbits, then multiplies", sceneLogin, 26 * time.Second, true},
-		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce, 0, false},
 		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit, 0, false},
 		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0, false},
 		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0, false},
@@ -1097,25 +1096,24 @@ func sceneMatrix(ts float64, scr *frame.Screen) {
 	}
 }
 
-// sceneIcons is a probe, not an effect: it lays a grid of SAP icon tokens
-// (@00@ .. @2F@) with their hex under each, to see whether a real GUI
-// substitutes the icon bitmap for the token inside a plain label. If the
-// tokens show as literal text, icons need the list channel or an icon field
-// and this label path is not enough — either way we learn it here. A slow
-// sweep highlights one cell so the scene still moves.
+// sceneIcons shows a grid of real SAP icons, drawn by us: each cell is an
+// output field holding the @XX@ token, which a dynpro output field substitutes
+// for the bitmap (a plain label does not — that is why the earlier version
+// printed the tokens as text). The hex id sits under each icon, and a marker
+// sweeps the grid so the scene keeps moving.
 func sceneIcons(ts float64, scr *frame.Screen) {
-	scr.Text(1, 2, "icon probe: if these become pictures, @xx@ works in a label")
-	const cols = 8
-	sweep := int(ts*6.0) % 48
-	for code := 0; code < 48; code++ {
-		r := 3 + (code/cols)*2
-		c := 4 + (code%cols)*9
-		mark := " "
+	scr.Output(1, 2, 52, "IHDR", "@0S@ SAP icons drawn by Go via output fields", false)
+	const cols, count = 12, 48
+	sweep := int(ts*8.0) % count
+	for code := 0; code < count; code++ {
+		r := 3 + (code/cols)*3
+		c := 4 + (code%cols)*8
+		scr.Output(r, c, 4, fmt.Sprintf("IC%02X", code), fmt.Sprintf("@%02X@", code), false)
+		label := fmt.Sprintf("%02X", code)
 		if code == sweep {
-			mark = ">"
+			label = ">" + label // the sweeping marker
 		}
-		scr.Text(r, c, fmt.Sprintf("%s@%02X@", mark, code))
-		scr.Text(r+1, c+1, fmt.Sprintf("%02X", code))
+		scr.Text(r+1, c, label)
 	}
 }
 
