@@ -174,8 +174,26 @@ func (s *Screen) Lines(startRow int, lines []string) *Screen {
 	return s
 }
 
-// Frame draws a box of width by height with a title on its top edge.
+// Frame draws a box of width by height with a title on its top edge. The box
+// is kept inside the screen: a height or width that would run off the grid is
+// trimmed, so a frame can never stretch the GUI's canvas into a tall scrollable
+// page.
 func (s *Screen) Frame(row, col, width, height int, title string) *Screen {
+	if row < 0 {
+		row = 0
+	}
+	if col < 0 {
+		col = 0
+	}
+	if s.Rows > 0 && row+height > s.Rows {
+		height = s.Rows - row
+	}
+	if s.Cols > 0 && col+width > s.Cols {
+		width = s.Cols - col
+	}
+	if height < 1 || width < 1 {
+		return s
+	}
 	s.atoms = append(s.atoms, diag.Atom{EType: diag.AtomFrame, Row: row, Col: col,
 		Attr: diag.AttrProtected, Length: width, Height: height, Text: title, Status: diag.Confirmed})
 	return s
