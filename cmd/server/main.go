@@ -99,7 +99,7 @@ func hasKey(m map[string]int, k string) bool { _, ok := m[k]; return ok }
 // its square, reusing the real selection screen's atoms so its dynpro
 // definition still matches and the client still submits. This is data in
 // and data out, our Go code the PBO and PAI.
-func inputRespond(cap *replay.Capture, selFrame int, client []diag.FieldValue, log func(string, ...any)) []byte {
+func inputRespond(cap *replay.Capture, selFrame int, client []diag.FieldValue, st *appState, log func(string, ...any)) []byte {
 	f, ok := cap.ServerFrame(selFrame)
 	if !ok {
 		return nil
@@ -114,8 +114,9 @@ func inputRespond(cap *replay.Capture, selFrame int, client []diag.FieldValue, l
 			continue
 		}
 		atoms, byName := diag.FieldIndex(it.Value)
-		// The value the user left in P_MS: the client echoes it at the same
-		// cell the server placed the field.
+		// Read what the user left in P_MS: the client echoes it at the cell
+		// the server placed the field. Log every value the client returned,
+		// so a miss is visible.
 		typed := ""
 		if idx, ok := byName["P_MS"]; ok {
 			ms := atoms[idx]
@@ -125,22 +126,19 @@ func inputRespond(cap *replay.Capture, selFrame int, client []diag.FieldValue, l
 				}
 			}
 		}
-		n, perr := strconv.Atoi(typed)
-		diag.SetField(atoms, byName, "P_MS", typed)
-		if perr == nil {
-			diag.SetField(atoms, byName, "P_TICKS", strconv.Itoa(n*n))
-			diag.SetField(atoms, byName, "P_BAR", fmt.Sprintf("%d squared is %d", n, n*n))
-			diag.SetField(atoms, byName, "P_TIME", "ok")
-		} else if typed != "" {
-			diag.SetField(atoms, byName, "P_BAR", "type a whole number")
-			diag.SetField(atoms, byName, "P_TIME", "?")
+		log("input turn %d: client returned %d field(s), P_MS=%q", st.turns, len(client), typed)
+		// The number to work from: what the user typed if it parses, else
+		// what we last showed. Then P_MS = P_MS + 1, shown back.
+		n := st.lastMS
+		if v, perr := strconv.Atoi(typed); perr == nil {
+			n = v
 		}
-		log("input: P_MS=%q -> %s", typed, func() string {
-			if perr == nil {
-				return strconv.Itoa(n * n)
-			}
-			return "n/a"
-		}())
+		n++
+		st.lastMS = n
+		diag.SetField(atoms, byName, "P_MS", strconv.Itoa(n))
+		diag.SetField(atoms, byName, "P_TICKS", strconv.Itoa(n))
+		diag.SetField(atoms, byName, "P_TIME", fmt.Sprintf("turn %d", st.turns))
+		diag.SetField(atoms, byName, "P_BAR", fmt.Sprintf("Go did P_MS+1 -> %d", n))
 		items[i].Value = diag.EncodeDyntAtoms(atoms)
 		h := m.Header
 		h.Compress = 0
@@ -246,10 +244,21 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			if mode == "input" {
 				var client []diag.FieldValue
 				if perr == nil {
-					client = diag.ClientFields(diag.ParseItems(m.Body))
+					cItems := diag.ParseItems(m.Body)
+					client = diag.ClientFields(cItems)
+					var keys []string
+					for _, it := range cItems {
+						k := it.Key()
+						if it.Type == diag.ItemAPPL || it.Type == diag.ItemAPPL4 {
+							k = fmt.Sprintf("%s(%d)", k, len(it.Value))
+						}
+						keys = append(keys, k)
+					}
+					log("client items: %s", strings.Join(keys, " "))
 				}
 				if selOK {
-					if out := inputRespond(cap, selFrame, client, log); out != nil {
+					st.turns++
+					if out := inputRespond(cap, selFrame, client, st, log); out != nil {
 						_ = send("selection screen with the answer", out)
 					}
 				}
@@ -363,6 +372,7 @@ func listRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 // user acted, and the last values the client returned.
 type appState struct {
 	turns  int
+	lastMS int
 	fields []diag.FieldValue
 	events []diag.Event
 }

@@ -22,7 +22,10 @@ type FieldValue struct {
 func ClientFields(items []Item) []FieldValue {
 	var out []FieldValue
 	for _, it := range items {
-		if it.Type != ItemAPPL4 || it.ID != 0x09 || it.SID != 0x02 {
+		// The server sends the screen as an APPL4 DYNT_ATOM (a 4-byte
+		// length); the client echoes the fields it changed as an APPL
+		// DYNT_ATOM (a 2-byte length). Read either.
+		if (it.Type != ItemAPPL4 && it.Type != ItemAPPL) || it.ID != 0x09 || it.SID != 0x02 {
 			continue
 		}
 		atoms, _ := ParseDyntAtoms(it.Value)
