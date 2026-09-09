@@ -68,8 +68,8 @@ func main() {
 			continue
 		}
 		cad := time.Duration(*pushMS) * time.Millisecond
-		if *mode == "anim" {
-			cad = 150 * time.Millisecond
+		if *mode == "anim" && *pushMS == 300 {
+			cad = 80 * time.Millisecond // faster default for animation; --push-ms overrides
 		}
 		go serve(ctx, c, cap, *mode, *menuAt, *screenFrame, *pushFrame, cad)
 	}
@@ -223,6 +223,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	popup := replay.FindPopup(capturePath)
 	jokeStep := 0
 	animOn := false
+	animCadence := cadence
 	selFrame, selOK := 0, false
 	if mode == "input" {
 		selFrame, selOK = findSelectionFrame(cap)
@@ -294,7 +295,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			if perr == nil && animOn == false && isNewWindow(diag.ParseItems(m.Body)) {
 				animOn = true
 				log("/o: starting animation in this window")
-				go push(ctx, c, animRenderer(cap, screenFrame, log), 150*time.Millisecond, log)
+				go push(ctx, c, animRenderer(cap, screenFrame, log), animCadence, pushing, log)
 				continue
 			}
 			if animOn {
@@ -362,7 +363,23 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				if mode == "list" {
 					// a list is static: sent once, no timer.
 				} else {
-					go push(ctx, c, rend, cadence, log)
+					go push(ctx, c, rend, cadence, pushing, log)
+				}
+				continue
+			}
+			if (mode == "anim" || animOn) && pushing != nil {
+				// While animating, any client frame is the user pressing a
+				// key (F3, Back, Enter): stop the animation and freeze the
+				// last frame. A window-close was handled just above.
+				close(pushing)
+				pushing = nil
+				animOn = false
+				log("animation stopped by the user")
+				frozen := frame.New(27, 120).
+					Text(1, 2, "animation stopped").
+					Text(3, 2, "close the window to exit")
+				if out := staticRespondWrap(cap, screenFrame, frozen); out != nil {
+					_ = send("animation stopped", out)
 				}
 				continue
 			}
@@ -397,7 +414,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 					_ = send(fmt.Sprintf("the probe's screen (capture S->C #%d)", screenFrame), f.Data)
 				}
 				pushing = make(chan struct{})
-				go push(ctx, c, renderer(mode, cap, screenFrame, pushFrame, log), cadence, log)
+				go push(ctx, c, renderer(mode, cap, screenFrame, pushFrame, log), cadence, pushing, log)
 			}
 		}
 	}
@@ -574,6 +591,30 @@ func animRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		}
 		return out
 	}
+}
+
+// staticRespondWrap wraps a screen in the located screen frame, for a
+// one-off static send such as a frozen animation.
+func staticRespondWrap(cap *replay.Capture, wrapFrame int, scr *frame.Screen) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return nil
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return nil
+	}
+	items := diag.ParseItems(m.Body)
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			items[i].Value = scr.Encode()
+			h := m.Header
+			h.Compress = 0
+			out, _ := diag.EncodeMessage(h, items, false)
+			return out
+		}
+	}
+	return nil
 }
 
 // staticScreen builds the screen for a static demo mode.
@@ -781,13 +822,15 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log 
 	return patchRenderer(cap, pushFrame, log)
 }
 
-func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence time.Duration, log func(string, ...any)) {
+func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence time.Duration, stop <-chan struct{}, log func(string, ...any)) {
 	n := 0
 	t := time.NewTicker(cadence)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-stop:
 			return
 		case <-t.C:
 		}
