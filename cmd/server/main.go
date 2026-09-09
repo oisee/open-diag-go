@@ -42,7 +42,7 @@ func main() {
 	screenFrame := flag.Int("screen", 209, "server frame index that shows the probe's screen (mode counter)")
 	pushFrame := flag.Int("push", 222, "server frame index the pushed counter frames are made from (mode counter)")
 	pushMS := flag.Int("push-ms", 300, "cadence of the pushed frames")
-	msgType := flag.String("msg-type", "W", "status message type to trigger a sound in anim: S, W, E or I (empty = none)")
+	msgType := flag.String("msg-type", "E", "status message to trigger a sound under the animation: S, W, E or I (empty = none)")
 	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame)")
 	flag.Parse()
 
@@ -74,11 +74,14 @@ func main() {
 		cad := time.Duration(*pushMS) * time.Millisecond
 		if *mode == "anim" {
 			if *pushMS == 300 {
-				cad = 80 * time.Millisecond // faster default for animation
+				cad = 80 * time.Millisecond // faster default for the full-screen effect
 			}
 			if cad < 60*time.Millisecond {
 				cad = 60 * time.Millisecond // a floor: the GUI cannot consume a full-screen frame faster
 			}
+		}
+		if *mode == "widgets" && *pushMS == 300 {
+			cad = 60 * time.Millisecond // light frames, so a brisker default
 		}
 		go serve(ctx, c, cap, *mode, *menuAt, *screenFrame, *pushFrame, cad, msgByte(*msgType), *msgLoop)
 	}
@@ -249,7 +252,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "widgets" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -363,7 +366,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist") && pushing == nil {
+			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist" || mode == "widgets") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, listWrap, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -385,7 +388,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "anim" || animOn) && pushing != nil {
+			if (mode == "anim" || mode == "widgets" || animOn) && pushing != nil {
 				// While animating, any client frame is the user pressing a
 				// key (F3, Back, Enter): stop the animation and freeze the
 				// last frame. A window-close was handled just above.
@@ -554,6 +557,83 @@ func jokePopup2(popup []byte) []byte {
 		Button(3, 7, 10, "ok", "=OK"))
 }
 
+// withSound inserts a status message before EOM on the first frame (and
+// every animMsgLoop frames) so the GUI plays that type's sound under an
+// animation. The type and loop come from the flags via package state.
+func withSound(items []diag.Item, n int) []diag.Item {
+	if animMsgType == 0 || !(n == 1 || (animMsgLoop > 0 && n%animMsgLoop == 1)) {
+		return items
+	}
+	msg := diag.StatusMessage(animMsgType, "odgp: now playing")
+	out := make([]diag.Item, 0, len(items)+1)
+	for _, it := range items {
+		if it.Type == diag.ItemEOM {
+			out = append(out, msg)
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// widgetsScreen animates a few real widgets — buttons and a framed box —
+// by moving them, not by redrawing a grid of characters. A frame is a
+// handful of elements, so it is small and the GUI keeps up at a fast
+// cadence; the motion is smoother than the starfield's.
+func widgetsScreen(t int) *frame.Screen {
+	scr := frame.New(27, 120)
+	scr.Frame(0, 0, 78, 24, "OPEN-DIAG-GO-PRO  --  widgets orbiting, drawn by Go")
+	// Three buttons on a circle, 120 degrees apart, turning counter-clockwise.
+	// The column radius is larger than the row radius because a character
+	// cell is about twice as tall as it is wide, so the path reads round.
+	const cx, cy, rx, ry = 39.0, 12.0, 28.0, 9.0
+	const speed = 0.06 // radians per frame
+	labels := []string{"[ Go ]", "[ DIAG ]", "[ no ABAP ]"}
+	for i, lab := range labels {
+		ang := -float64(t)*speed + float64(i)*(2.0*math.Pi/3.0) // minus = counter-clockwise
+		col := int(cx + rx*math.Cos(ang))
+		row := int(cy + ry*math.Sin(ang))
+		scr.Button(row, col, len(lab)+2, lab, fmt.Sprintf("=B%d", i))
+	}
+	scr.Text(int(cy), int(cx)-3, "( o )")
+	scr.Text(25, 2, fmt.Sprintf("frame %d   3 buttons orbiting CCW   F3/Back stops", t))
+	return scr
+}
+
+// widgetsRenderer wraps the located screen frame and moves the widgets.
+func widgetsRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	atomIdx := -1
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			atomIdx = i
+		}
+	}
+	if atomIdx < 0 {
+		return func(int) []byte { return nil }
+	}
+	h := m.Header
+	h.Compress = 0
+	base := items
+	return func(n int) []byte {
+		items := append([]diag.Item{}, base...)
+		items[atomIdx].Value = widgetsScreen(n).Encode()
+		items = withSound(items, n)
+		out, err := diag.EncodeMessage(h, items, false)
+		if err != nil {
+			return nil
+		}
+		return out
+	}
+}
+
 // animScreen is one frame of a timed animation: a scrolling marquee and a
 // sine wave of stars that moves with t. Every element is a label, so it
 // draws on a real GUI and in the TUI alike. This is the effect-engine
@@ -581,7 +661,6 @@ func animScreen(t int) *frame.Screen {
 
 // animRenderer wraps the located screen frame and animates its DYNT_ATOM.
 func animRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
-	msgType, msgLoop := animMsgType, animMsgLoop
 	f, ok := cap.ServerFrame(wrapFrame)
 	if !ok {
 		return func(int) []byte { return nil }
@@ -606,21 +685,7 @@ func animRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 	return func(n int) []byte {
 		items := append([]diag.Item{}, base...)
 		items[atomIdx].Value = animScreen(n).Encode()
-		// A status message triggers the sound of its type. Sent on the first
-		// frame, and again every msgLoop frames when asked, so a track in
-		// that sound's WAV plays under the animation.
-		if msgType != 0 && (n == 1 || (msgLoop > 0 && n%msgLoop == 1)) {
-			msg := diag.StatusMessage(msgType, "odgp: now playing")
-			// insert before EOM so it is part of the screen
-			out := make([]diag.Item, 0, len(items)+1)
-			for _, it := range items {
-				if it.Type == diag.ItemEOM {
-					out = append(out, msg)
-				}
-				out = append(out, it)
-			}
-			items = out
-		}
+		items = withSound(items, n)
 		out, err := diag.EncodeMessage(h, items, false)
 		if err != nil {
 			return nil
@@ -960,6 +1025,8 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, list
 		return animRenderer(cap, screenFrame, log)
 	case "colorlist":
 		return colorlistRenderer(listWrap, log)
+	case "widgets":
+		return widgetsRenderer(cap, screenFrame, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }
