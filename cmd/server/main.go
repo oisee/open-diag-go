@@ -587,7 +587,7 @@ func widgetsScreen(t int) *frame.Screen {
 	// cell is about twice as tall as it is wide, so the path reads round.
 	const cx, cy, rx, ry = 39.0, 12.0, 28.0, 9.0
 	const speed = 0.06 // radians per frame
-	labels := []string{"[ Go ]", "[ DIAG ]", "[ no ABAP ]"}
+	labels := []string{"Go", "DIAG", "no ABAP"}
 	for i, lab := range labels {
 		ang := -float64(t)*speed + float64(i)*(2.0*math.Pi/3.0) // minus = counter-clockwise
 		col := int(cx + rx*math.Cos(ang))
