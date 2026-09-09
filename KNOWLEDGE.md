@@ -279,12 +279,27 @@ unreadable — it decompresses** (below).
    and **data packets** (`ff ff ff ff 01 …` then row-major fixed-width cells).
    Slice cells by the catalog field lengths.
 
-Proof (public T100 demo content, read off the wire): `SPRSL=E ARBGB=Q6
-MSGNR=001 TEXT="Enter an existing info structure"` and other varied rows across
-many frames. **Caveat:** the provider is `SAP.DataPOnDemand.1` — each flush
-ships ~one populated row + catalog + index tables; the rest arrive on scroll
-(`<DATAREQUEST>` → new `RFC_TR.00` `InsertPacket`s). So a full table read needs
-to drive the paging, not just one frame.
+**Correction (three layers, not two).** The row/cell data is one level deeper
+than the catalog and every level is RFC-row-chunked, so a plain Decompress at
+the `12 1f 9d` offset only reaches the catalog — you must `ExtractLZHStreams`
+(de-chunk) *again* on each decompressed buffer. `pkg/alv.allBlobs` now descends
+recursively; `DecodeGrid` returns the cells **and** per-cell colours.
+
+**Cell-data packet** (cl_salv_table / DataPOnDemand, 7.58). A contiguous packet
+of per-row records, stride 2688 = **six 448-byte slots** per row:
+- slot 0 is the row marker `FF FF FF FF | rownum u32 LE | 00 00 00 00`;
+- slots carry `colidx u32 LE | rowidx u32 LE | **colourField** u32 LE | value`
+  (value is raw ASCII, space/pad-filled to the slot). Cells key back to the
+  catalog by `colidx` (1-based).
+
+**Per-cell colour** rides as that 3rd u32 (`colourField`) — there is **no**
+separate colour table, no `LVC_S_SCOL`/`KKBLO` on the wire:
+`colourField = 0` = uncoloured; otherwise `colourField = 1 + (colour | int<<3 |
+inv<<4)`, i.e. `colour = (cf-1)&7`, `int = (cf-1)&8`, `inv = (cf-1)&16`. Proven
+against `(row+col) MOD 7 + 1, int=1` on all 48 coloured cells (`pkg/alv`
+`SapColour`/`ColourField`). Verified on the T100 catalog too — its rows page in
+on scroll (`<DATAREQUEST>`), the same three-layer descent applies. **To colour a
+cell** an encoder sets that slot's 3rd u32 to `ColourField(colour,int,inv)`.
 
 ## 13. Control Framework items (grids, trees, editors)
 

@@ -165,34 +165,30 @@ func chunkRFC(stream []byte) []byte {
 // allBlobs returns every decompressed payload in an RFC_TR value: each outer
 // stream, plus every nested SAP-LZH blob found inside a decompressed outer
 // stream (one level of nesting, as the wire uses).
+// allBlobs collects every decompressed buffer reachable from the RFC_TR value.
+// The ALV data nests up to three levels deep, and each level is RFC-row-chunked
+// (03 05 03 05 markers), so a plain Decompress at the 12 1f 9d offset only ever
+// reaches the catalog. Descending with ExtractLZHStreams — which strips the row
+// markers — at every level surfaces the row/cell data packet as well.
 func allBlobs(rfctrValue []byte) [][]byte {
 	var blobs [][]byte
-	for _, stream := range ExtractLZHStreams(rfctrValue) {
-		dec, err := sapcompress.Decompress(stream)
-		if err != nil {
-			continue
+	seen := 0
+	var descend func(data []byte, depth int)
+	descend = func(data []byte, depth int) {
+		blobs = append(blobs, data)
+		if depth <= 0 || seen > 300 {
+			return
 		}
-		blobs = append(blobs, dec)
-		pos := 0
-		for {
-			j := bytes.Index(dec[pos:], lzhMagic)
-			if j < 0 {
-				break
+		for _, s := range ExtractLZHStreams(data) {
+			seen++
+			if dec, err := sapcompress.Decompress(s); err == nil && len(dec) > 0 {
+				descend(dec, depth-1)
 			}
-			hdr := pos + j - 4
-			next := pos + j + len(lzhMagic)
-			if hdr < 0 {
-				pos = next
-				continue
-			}
-			if _, err := sapcompress.ParseHeader(dec[hdr:]); err != nil {
-				pos = next
-				continue
-			}
-			if inner, err := sapcompress.Decompress(dec[hdr:]); err == nil {
-				blobs = append(blobs, inner)
-			}
-			pos = next
+		}
+	}
+	for _, stream := range ExtractLZHStreams(rfctrValue) {
+		if dec, err := sapcompress.Decompress(stream); err == nil {
+			descend(dec, 3)
 		}
 	}
 	return blobs
@@ -235,6 +231,156 @@ func DecodeRows(rfctrValue []byte) (cols []Column, rows [][]string, err error) {
 		}
 	}
 	return cols, rows, nil
+}
+
+// Cell-data packet geometry (cl_salv_table / SAP.DataPOnDemand on 7.58), read
+// off a coloured ALV. The packet is a run of per-row records; each record is a
+// 12-byte header then one 448-byte slot per cell.
+const (
+	cellSlot    = 448 // one cell slot; a row is 6 of them (stride 2688)
+	cellSlotHdr = 12  // colidx u32 LE | rowidx u32 LE | colourField u32 LE, then the value
+
+)
+
+var cellRowMarker = []byte{0xff, 0xff, 0xff, 0xff}
+
+// Grid is a decoded ALV grid: its catalog, its cell text rows, and a parallel
+// grid of per-cell colour fields (0 = uncoloured; see SapColour).
+type Grid struct {
+	Cols    []Column
+	Rows    [][]string
+	Colours [][]int
+}
+
+// DecodeGrid decodes an RFC_TR value all the way to cell text AND per-cell
+// colour — the coloured-ALV path that DecodeRows' catalog-only view misses.
+func DecodeGrid(rfctrValue []byte) (Grid, error) {
+	blobs := allBlobs(rfctrValue)
+	var best []Column
+	for _, b := range blobs {
+		if c := parseCatalog(b); len(c) > len(best) {
+			best = c
+		}
+	}
+	if len(best) == 0 {
+		return Grid{}, ErrNoCatalog
+	}
+	g := Grid{Cols: best}
+	for _, b := range blobs {
+		if rows, cols, ok := decodeCellPacket(b, best); ok {
+			g.Rows, g.Colours = rows, cols
+			break
+		}
+	}
+	return g, nil
+}
+
+// decodeCellPacket reads the per-row cell records from a blob. Each cell slot
+// carries its column index, its row index, a colour field, and the raw ASCII
+// value; cells are keyed back to the catalog by column index (1-based).
+func decodeCellPacket(b []byte, cols []Column) (rows [][]string, colours [][]int, ok bool) {
+	ncol := len(cols)
+	if ncol == 0 {
+		return nil, nil, false
+	}
+	// Row records start at FF FF FF FF followed by a small rownum and 4 zero
+	// bytes; slot bodies never contain that marker.
+	type start struct {
+		off, rownum int
+	}
+	var starts []start
+	for pos := 0; ; {
+		j := bytes.Index(b[pos:], cellRowMarker)
+		if j < 0 {
+			break
+		}
+		q := pos + j
+		pos = q + 4
+		if q+12 > len(b) {
+			continue
+		}
+		if binary.LittleEndian.Uint32(b[q+8:q+12]) != 0 {
+			continue
+		}
+		if rn := binary.LittleEndian.Uint32(b[q+4 : q+8]); rn != 0 && rn <= 1<<20 {
+			starts = append(starts, start{q, int(rn)})
+		}
+	}
+	if len(starts) == 0 {
+		return nil, nil, false
+	}
+	for _, st := range starts {
+		vals := map[int]string{}
+		clr := map[int]int{}
+		// A row is six 448-byte slots from the marker: slot 0 is the marker
+		// itself, slots carry colidx | rowidx | colourField | value.
+		for k := 0; k < 6; k++ {
+			slot := st.off + k*cellSlot
+			if slot+cellSlotHdr > len(b) {
+				break
+			}
+			if bytes.Equal(b[slot:slot+4], cellRowMarker) {
+				continue // the row-marker slot, not a data cell
+			}
+			colidx := int(binary.LittleEndian.Uint32(b[slot : slot+4]))
+			if colidx < 1 || colidx > ncol {
+				continue
+			}
+			colourField := int(binary.LittleEndian.Uint32(b[slot+8 : slot+12]))
+			end := slot + cellSlot
+			if end > len(b) {
+				end = len(b)
+			}
+			vals[colidx] = trimCell(b[slot+cellSlotHdr : end])
+			clr[colidx] = colourField
+		}
+		if len(vals) == 0 {
+			continue
+		}
+		row := make([]string, ncol)
+		crow := make([]int, ncol)
+		for k := 0; k < ncol; k++ {
+			if v, ok := vals[k+1]; ok {
+				row[k] = v
+				crow[k] = clr[k+1]
+			}
+		}
+		// The first column (the row index) sits in the marker slot; fill it.
+		if ncol > 0 && row[0] == "" {
+			row[0] = fmt.Sprintf("%d", st.rownum)
+		}
+		rows = append(rows, row)
+		colours = append(colours, crow)
+	}
+	if len(rows) == 0 {
+		return nil, nil, false
+	}
+	return rows, colours, true
+}
+
+// SapColour derives the SAP colour (0 none, 1..7) and the intensified/inverse
+// flags from a cell's colour field: colourField = 1 + (colour | int<<3 | inv<<4).
+func SapColour(colourField int) (colour int, intensified, inverse bool) {
+	if colourField <= 0 {
+		return 0, false, false
+	}
+	raw := colourField - 1
+	return raw & 7, raw&8 != 0, raw&16 != 0
+}
+
+// ColourField is the inverse of SapColour: the wire value for a chosen colour.
+func ColourField(colour int, intensified, inverse bool) int {
+	if colour == 0 {
+		return 0
+	}
+	raw := colour & 7
+	if intensified {
+		raw |= 8
+	}
+	if inverse {
+		raw |= 16
+	}
+	return raw + 1
 }
 
 // parseCatalog reads a field catalog from a blob: a whole number of
@@ -391,9 +537,10 @@ func trimName(b []byte) string {
 	return string(bytes.TrimRight(b, " \x00"))
 }
 
-// trimCell strips the trailing space/NUL padding of a fixed-width cell.
+// trimCell strips the trailing padding of a fixed-width cell — spaces, NULs and
+// any other control bytes the slot is filled with.
 func trimCell(b []byte) string {
-	return string(bytes.TrimRight(b, " \x00"))
+	return string(bytes.TrimRightFunc(b, func(r rune) bool { return r <= ' ' }))
 }
 
 func writeName(dst []byte, name string) {
