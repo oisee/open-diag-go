@@ -120,6 +120,19 @@ func (s *Screen) InputF4(row, col, width int, name, value string) *Screen {
 	return s
 }
 
+// Date is an input field holding a date. On the wire it is an ordinary
+// input; a native calendar needs the field's DDIC type, which a screen
+// built here does not carry, so the value and an F4 marker are what a rogue
+// screen can offer. width defaults to the value's length.
+func (s *Screen) Date(row, col int, name, value string) *Screen {
+	return s.InputF4(row, col, len(value), name, value)
+}
+
+// Time is an input field holding a time, like Date.
+func (s *Screen) Time(row, col int, name, value string) *Screen {
+	return s.InputF4(row, col, len(value), name, value)
+}
+
 // Checkbox places a checkbox with its label.
 func (s *Screen) Checkbox(row, col int, name, label string, on bool) *Screen {
 	state := byte(' ')

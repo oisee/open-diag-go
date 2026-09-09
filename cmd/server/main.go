@@ -283,11 +283,17 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 						_ = send(fmt.Sprintf("the probe's screen, no handshake (capture S->C #%d)", screenFrame), f.Data)
 					}
 				} else {
-					// synth and list draw their own first frame.
+					// synth and the static demos draw their own first frame.
 					_ = send("our own screen, no handshake", rend(0))
 				}
 				pushing = make(chan struct{})
-				go push(ctx, c, rend, cadence, log)
+				// A static screen is sent once and left alone; only the
+				// animated modes keep pushing on a timer. Pushing a static
+				// screen every tick overwrote what the user was typing.
+				static := mode == "list" || mode == "showcase" || mode == "states"
+				if !static {
+					go push(ctx, c, rend, cadence, log)
+				}
 				continue
 			}
 			if pushing != nil {
@@ -328,13 +334,15 @@ var counterText = regexp.MustCompile(`\x20{4,9}[0-9]{1,6}\x20`)
 // there but not drawn; the F4 one shows the matchcode button.
 func statesScreen() *frame.Screen {
 	return frame.New(27, 120).
-		Frame(0, 0, 64, 11, "Input field states").
+		Frame(0, 0, 70, 14, "Input field states and types").
 		Text(1, 2, "active").Input(1, 20, 20, "S_ACT", "type here").
 		Text(2, 2, "inactive").InputProtected(2, 20, 20, "S_INA", "cannot edit").
 		Text(3, 2, "hidden").InputHidden(3, 20, 20, "S_HID", "secret").
-		Text(3, 44, "(hidden field is here, not shown)").
+		Text(3, 44, "(hidden is here, not shown)").
 		Text(4, 2, "F4 help").InputF4(4, 20, 20, "S_F4", "press F4").
-		Text(6, 2, "protected is grey, active is white, F4 shows the dropdown")
+		Text(6, 2, "date").Date(6, 20, "S_DAT", "2026-09-09").
+		Text(7, 2, "time").Time(7, 20, "S_TIM", "14:30:00").
+		Text(9, 2, "static screen: type freely, it will not be overwritten")
 }
 
 // statesRenderer wraps the located screen frame and swaps in the states screen.
