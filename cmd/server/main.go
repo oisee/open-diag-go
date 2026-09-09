@@ -119,7 +119,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	if mode == "menu" || mode == "counter" {
 		group = menuAt
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -152,12 +152,19 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			} else {
 				log("<- client frame, %d bytes (%v)", len(payload), perr)
 			}
-			if (mode == "flash" || mode == "synth") && pushing == nil {
-				if f, ok := cap.ServerFrame(screenFrame); ok {
-					_ = send(fmt.Sprintf("the probe's screen, no handshake (capture S->C #%d)", screenFrame), f.Data)
+			if (mode == "flash" || mode == "synth" || mode == "list") && pushing == nil {
+				rend := renderer(mode, cap, screenFrame, pushFrame, log)
+				if mode == "flash" {
+					// flash replays the captured screen as it was.
+					if f, ok := cap.ServerFrame(screenFrame); ok {
+						_ = send(fmt.Sprintf("the probe's screen, no handshake (capture S->C #%d)", screenFrame), f.Data)
+					}
+				} else {
+					// synth and list draw their own first frame.
+					_ = send("our own screen, no handshake", rend(0))
 				}
 				pushing = make(chan struct{})
-				go push(ctx, c, renderer(mode, cap, pushFrame, log), cadence, log)
+				go push(ctx, c, rend, cadence, log)
 				continue
 			}
 			if pushing != nil {
@@ -181,7 +188,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 					_ = send(fmt.Sprintf("the probe's screen (capture S->C #%d)", screenFrame), f.Data)
 				}
 				pushing = make(chan struct{})
-				go push(ctx, c, renderer(mode, cap, pushFrame, log), cadence, log)
+				go push(ctx, c, renderer(mode, cap, screenFrame, pushFrame, log), cadence, log)
 			}
 		}
 	}
@@ -193,9 +200,57 @@ var counterText = regexp.MustCompile(`\x20{4,9}[0-9]{1,6}\x20`)
 // replaced, the header's stat=f0 kept as the capture had it.
 // renderer picks how the pushed frames are built: synth from our own
 // frame.Screen, or a patch of a captured frame.
-func renderer(mode string, cap *replay.Capture, pushFrame int, log func(string, ...any)) func(n int) []byte {
-	if mode == "synth" {
+// listRenderer builds a static classic list from frame.Lines and serves
+// it in the wrapper of the located screen frame — the write-list shown with
+// the primitives we have, no capture of a real list needed.
+func listRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		log("no server frame #%d to wrap", wrapFrame)
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		log("wrap frame: %v", err)
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	atomIdx := -1
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			atomIdx = i
+		}
+	}
+	if atomIdx < 0 {
+		return func(int) []byte { return nil }
+	}
+	lines := []string{
+		"odgp classic list  --  a write-list, drawn from frame.Lines",
+		"------------------------------------------------------------",
+		"idx    label      value      square",
+		"------------------------------------------------------------",
+	}
+	for i := 1; i <= 18; i++ {
+		lines = append(lines, fmt.Sprintf("%3d    row        %-9d  %d", i, i, i*i))
+	}
+	lines = append(lines, "------------------------------------------------------------", "end of list")
+	scr := frame.New(27, 120).Lines(0, lines)
+	items[atomIdx].Value = scr.Encode()
+	h := m.Header
+	h.Compress = 0
+	payload, err := diag.EncodeMessage(h, items, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	return func(int) []byte { return payload }
+}
+
+func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log func(string, ...any)) func(n int) []byte {
+	switch mode {
+	case "synth":
 		return synthRenderer(cap, pushFrame, log)
+	case "list":
+		return listRenderer(cap, screenFrame, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }
