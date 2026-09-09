@@ -246,7 +246,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	st := &appState{}
 	popup := replay.FindPopup(capturePath)
 	var listWrap []byte
-	if mode == "colorlist" || mode == "iconanim" || mode == "led" {
+	if mode == "colorlist" || mode == "iconanim" || mode == "led" || mode == "demo" {
 		listWrap = replay.FindListWrap(capturePath)
 		if listWrap != nil {
 			log("plain list wrapper located in the capture")
@@ -890,7 +890,9 @@ func demoScenes() []scene {
 		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0, false},
 		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0, false},
 		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix, 0, false},
-		{"iconplasma", "an LED plasma of coloured icons in dynpro output fields", sceneIconPlasma, 0, false},
+		{"plasma", "LED plasma in the list channel — colour + letters", ledFallback, 0, false},
+		{"rings", "LED rings in the list channel", ledFallback, 0, false},
+		{"ball", "a bright ball bouncing on the LED field", ledFallback, 0, false},
 		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars, 0, false},
 		{"icons", "a grid of real SAP icons, drawn by us via output fields", sceneIcons, 0, false},
 	}
@@ -1119,21 +1121,25 @@ func sceneIcons(ts float64, scr *frame.Screen) {
 	}
 }
 
-// sceneIconPlasma is an LED plasma drawn in the dynpro channel: each cell is a
-// coloured SAP LED icon (green / yellow / red light, green LED) in an output
-// field, chosen by the plasma value — the same effect as the list-channel led
-// mode, but as icons, so it lives inside the demo's dynpro screen.
-func sceneIconPlasma(ts float64, scr *frame.Screen) {
-	icons := []string{"@08@", "@5B@", "@09@", "@0A@"} // green light, green LED, yellow, red
-	const rows, cols = 10, 18
-	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			fr, fc := float64(r), float64(c)
-			v := (math.Sin(fc/3.0+ts) + math.Sin(fr/2.0-ts) + math.Sin((fc+fr)/4.0+ts*1.3) + 3.0) / 6.0
-			idx := clampi(int(v*float64(len(icons))), 0, len(icons)-1)
-			scr.Icon(1+r, 2+c*4, icons[idx])
-		}
+// ledSceneEffect maps a demo LED scene's name to its effect index (0 plasma,
+// 1 rings, 2 ball), or -1 if the scene is not an LED scene. These scenes render
+// in the list channel via the captured list wrapper, not as a dynpro screen.
+func ledSceneEffect(name string) int {
+	switch name {
+	case "plasma":
+		return 0
+	case "rings":
+		return 1
+	case "ball":
+		return 2
 	}
+	return -1
+}
+
+// ledFallback is what an LED scene draws when the capture has no list frame to
+// wrap — a note instead of the effect.
+func ledFallback(ts float64, scr *frame.Screen) {
+	scr.Text(2, 2, "LED effect needs the capture's list frame")
 }
 
 // sceneStars is the starfield and marquee: the whole grid rewritten each
@@ -1246,7 +1252,7 @@ func loginFieldsScreen(ts float64) *frame.Screen {
 // milliseconds, then the next, then back to the first. The renderer ignores
 // the frame counter push hands it and reads the real elapsed time, so the
 // scenes advance by seconds, not by frames.
-func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(string, ...any)) func(n int) []byte {
 	f, ok := cap.ServerFrame(wrapFrame)
 	if !ok {
 		return func(int) []byte { return nil }
@@ -1269,6 +1275,34 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 	h.Compress = 0
 	base := items
 	logon, haveLogon := loadLogonWrap(cap, log)
+	// Prepare the list wrapper so the LED scenes can render in the list channel:
+	// keep everything but the list stream, remember where the stream goes.
+	var listKeep []diag.Item
+	var listHdr diag.Header
+	listInsertAt := -1
+	haveList := false
+	if listWrap != nil {
+		if lm, lerr := diag.ParseMessage(listWrap, false); lerr == nil {
+			for _, it := range diag.ParseItems(lm.Body) {
+				isList := it.Type == diag.ItemSBA || it.Type == diag.ItemSFE || it.Type == diag.ItemSLC ||
+					(it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x0b)
+				if isList {
+					if listInsertAt < 0 {
+						listInsertAt = len(listKeep)
+					}
+					continue
+				}
+				listKeep = append(listKeep, it)
+			}
+			if listInsertAt < 0 {
+				listInsertAt = len(listKeep)
+			}
+			listHdr = lm.Header
+			listHdr.Compress = 0
+			haveList = true
+			log("demo: list wrapper ready for LED scenes")
+		}
+	}
 	scenes := demoScenes()
 	def := time.Duration(demoSceneMS) * time.Millisecond
 	if def <= 0 {
@@ -1304,6 +1338,20 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		if idx != lastScene {
 			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach)
 			lastScene = idx
+		}
+		// The LED scenes render in the list channel via the list wrapper. The
+		// effect time is quantised to ~180ms steps, so consecutive 80ms ticks
+		// produce identical frames and the adaptive push (§push) skips them —
+		// the LED runs at its own gentle rate while the dynpro scenes stay fast.
+		if eff := ledSceneEffect(scenes[idx].name); eff >= 0 && haveList {
+			t := float64(int(ts/0.18)) * 0.15
+			mine := diag.EncodeListItems(ledSegmentsEff(eff, t))
+			out := append(append(append([]diag.Item{}, listKeep[:listInsertAt]...), mine...), listKeep[listInsertAt:]...)
+			msg, err := diag.EncodeMessage(listHdr, out, false)
+			if err != nil {
+				return nil
+			}
+			return msg
 		}
 		// The login scene runs inside the real captured logon frame when we
 		// have one: swap just the fields atom, so the menu bar, the New
@@ -1703,12 +1751,16 @@ func clampi(v, lo, hi int) int {
 // logical LED is drawn as a bw x bh character block; the effect cycles every
 // few seconds among plasma, rings and a bouncing ball.
 func ledSegments(n int) []diag.ListSegment {
+	return ledSegmentsEff((n/45)%len(ledEffects), float64(n)*0.15)
+}
+
+// ledSegmentsEff renders one specific effect at time t — used both by the led
+// mode (cycling) and by the demo's LED scenes (a fixed effect per scene).
+func ledSegmentsEff(eff int, t float64) []diag.ListSegment {
 	const bw, bh = 4, 2
-	eff := (n / 45) % len(ledEffects) // ~8s per effect at the led cadence
 	segs := []diag.ListSegment{
 		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED display: colour + letters (RLE)"),
 	}
-	t := float64(n) * 0.15
 	for lr := 0; lr < ledRows; lr++ {
 		type run struct {
 			startLC, wLC int
@@ -1732,7 +1784,7 @@ func ledSegments(n int) []diag.ListSegment {
 		}
 	}
 	segs = append(segs, diag.ListText(2+ledRows*bh+1, 2, diag.ColNormal,
-		fmt.Sprintf("frame %d   %s   %dx%d LEDs   F3/Back stops", n, ledEffects[eff], ledRows, ledCols)))
+		fmt.Sprintf("%s   %dx%d LEDs   F3/Back stops", ledEffects[eff], ledRows, ledCols)))
 	return segs
 }
 
@@ -1969,7 +2021,7 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, list
 	case "widgets":
 		return widgetsRenderer(cap, screenFrame, log)
 	case "demo":
-		return demoRenderer(cap, screenFrame, log)
+		return demoRenderer(cap, screenFrame, listWrap, log)
 	case "iconanim":
 		return iconanimRenderer(listWrap, log)
 	case "led":
