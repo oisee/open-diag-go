@@ -171,6 +171,92 @@ scrollable, slow-to-repaint canvas — `pkg/frame` now clips boxes to the screen
 - A new session/window is a new `mode` byte in the header (seen from Ctrl+N).
 - `/o` opens a new window (used by `server` to start an animation).
 
+## 12. ALV grid & the data channel (Control Framework)
+
+An **ALV grid** is not a dynpro screen — it is a Control Framework control plus a
+data channel. Read off an SE16 T100 run (200 rows), driven both as "Standard
+list" and "ALV Grid".
+
+**Control setup** (one S→C frame): `CONTAINER.06` = three NUL-terminated
+strings `"GRID1\0SAPLSLVC_FULLSCREEN\00500\0"` (control name, hosting repo
+program, dynpro); `CONTROL.CONTROL_PROPERTIES` (id 0x0e) = a `[2-byte tag]
+[value]` TLV run (id/name/type + geometry); `DYNT.12` = the SHELLID as ASCII
+(e.g. "121"); `CONTAINER.01/08/09/0a` = the dynpro↔control geometry handshake
+(both directions). An empty `<DATAMANAGER/>` XML rides along on setup.
+
+**Column catalog & focused cell** — in the **DATAMANAGER XML** (`encoding="sap*"`):
+`<DATACHANGES HANDLE="1"><IT IDX=col C1=pos C2=width OP="I"/></DATACHANGES>` is
+the column catalog (one `<IT>` per column); `<CONTROL SHELLID=..>` `<PROPERTY>`
+pairs carry the focused cell in cleartext (`CurrentCellColID`, `CurrentCellText`,
+`CurrentCellRowID`). Only the cursor cell is cleartext here, not the whole grid.
+
+**Bulk rows** — in `APPL RFC_TR` (id 0x08), *not* cleartext. The result window
+is shipped as an **OLE-automation call to the frontend** (`SAPLOLEA`,
+`OLE_FLUSH_CALL`, `IMPORT_XML(XML_DATA_STREAM)`); the row payload is an inner
+compressed/serialized blob (250-byte `03 05 …` chunks) inside the already-LZ-
+decompressed DIAG body — opaque on the wire in ALV mode. RFC_TR sids: `.00` S→C
+(the automation call = grid data), `.01` C→S (results + frontend verb catalog),
+`.04` control setup+ack, `.06` `SAPGUI_PROGRESS_INDICATOR` (progress while the
+query runs).
+
+**Paging** — client sends `<DATAREQUEST HANDLE="3" NLINES=n FIRSTLINE=m/>` in
+its DATAMANAGER XML ("send n rows from m"); server answers with a new `RFC_TR.00`
+block. Non-ALV table controls instead page with `APPL4 DYNT.TABLE_ROW_DAT`
+(id 0x09 sid 0x05), a 4-byte `[row# BE][flag]` record.
+
+**SADL / IDA** — the IDA stack is named in the RFC_TR string pools
+(`CL_SALV_GUI_TABLE_IDA`, `CL_SALV_GUI_GRID_CONTROLER_IDACP`,
+`CL_ALV_CUL_CONTROLLER`) but **no OData/SADL query text is on the DIAG wire** —
+pushdown is entirely server-side (ABAP↔HANA). To a DIAG client, IDA is
+indistinguishable from classic ALV except by these class names; the client only
+ever speaks the generic CFW `DATAREQUEST`/automation protocol. **The readable
+data path over DIAG is the classic list channel** (§5): "Standard list" mode
+delivers the T100 rows as cleartext `VARINFO.0b` runs, ALV mode does not.
+
+## 13. Control Framework items (grids, trees, editors)
+
+CFW is the pixel-control world. **Its binary structs are little-endian** — the
+exception to this doc's big-endian default.
+
+**`UI_EVENT.UI_EVENT_SOURCE` (id 0x0f sid 0x01)** — a 16-byte (or 32-byte, a
+second empty slot appended) event *source/focus* descriptor, read as 8×u16 LE:
+`w0` event-class, `w1` src-kind, `w2` control-type/subcode, `w3/w4` zero,
+`w5/w6` two payload indices (item/row, sub/col — unconfirmed), `w7` trailer
+(0x0001 / 0x0101). It names the *source*, not the event — the **semantic event
+is in the `<EVENTS>` XML** of the same C→S frame. The two are largely
+mutually exclusive; only the TextEdit set-cursor fires both (then the binary
+record is a constant `w1=0x0d w2=0x0b` signature with zero payload).
+
+**`CONTAINER.xx` (id 0x0a)** — the container hierarchy. sid is a per-screen
+handle. `.06` = **name registration**, three NUL-terminated strings
+`<control-name>\0<program>\0<dynpro>\0` (e.g. `GRID1\0SAPLSLVC_FULLSCREEN\00500`,
+`EDITOR\0SAPLS38E\00500`, empty name = screen root). Every other sid = a 9-byte
+descriptor `A(u16) B(u16) C(u16) D(u16) E(u8)`: `A` = this handle, `C` = parent
+handle (confirmed by a tabstrip/sub pair), `D`/`E` = geometry (== the control's
+CONTROL_PROPERTIES tag07/tag06). `.01` all-zero = root/desktop.
+
+**`CONTROL.CONTROL_PROPERTIES` (id 0x0e sid 0x01)** — TLV, entries `00 <tag:u8>
+<ASCII value> 00`: tag01 ordinal, tag02 control name (space-padded ~32),
+tag03/04/05 constant `1/0/0` (flags?), tag06/tag07 = cell geometry that tracks
+window resizes. (`CONTROL_FOCUS` sid 0x02 / `CONTROL_EVENT` sid 0x03 exist in
+`names.go` but did not occur in the capture.)
+
+**`<DATAMANAGER>` XML (item type XML, 0x11)** — the real CFW payload is C→S with
+`encoding="sap*"`; S→C is a 53-byte empty `<DATAMANAGER/>` poll/ack. Children:
+- `<COPY><GUI><METRICS .../><DIMENSIONS X0=cols Y0=rows/>` — window metrics at
+  logon/resize.
+- **`<EVENTS><EVENT SHELLID EVENTID [SHELLEVENT="X"]><PARAM PID VALUE/>…>`** — the
+  semantic control-event channel. `SHELLID` = control instance. EVENTID map
+  (partial): **12** TextEdit set-cursor/dbl-click (PARAM0 = line text, PID1 line,
+  PID2 col), **14** toolbar/function → **PARAM0 = the function code** (e.g.
+  `WB_ACTIVATE`), **18/25/36** tree/toolbar (PARAM0 = a right-justified node id).
+  So a control's toolbar button sends its fcode here, in the EVENTS XML — the
+  control-world analogue of the OK-code (§3).
+- `<CONTROLS><CONTROL SHELLID><PROPERTY VALUE NAME/></CONTROL>` — control state
+  reported back (TextEdit SelPos*/FirstVisibleLine; ALV CurrentCell*/FirstVisibleRow).
+- `<TABLES>` — the ALV/table data channel (§12): `<DATACHANGES HANDLE><IT IDX C1
+  C2 OP>` batches and `<DATAREQUEST HANDLE NLINES FIRSTLINE/>` paging.
+
 ## 11. Open threads
 
 - **MNUENTRY synthesis** — a Go builder for menus/toolbar/function keys, and

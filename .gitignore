@@ -9,3 +9,7 @@ captures/*.log
 /C
 odgp-server
 /tui
+
+# throwaway decode/scratch programs (agents + manual)
+zz_*.go
+*_tmp.go
