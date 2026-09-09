@@ -13,6 +13,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -66,7 +67,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "server: accept:", err)
 			continue
 		}
-		go serve(ctx, c, cap, *mode, *menuAt, *screenFrame, *pushFrame, time.Duration(*pushMS)*time.Millisecond)
+		cad := time.Duration(*pushMS) * time.Millisecond
+		if *mode == "anim" {
+			cad = 150 * time.Millisecond
+		}
+		go serve(ctx, c, cap, *mode, *menuAt, *screenFrame, *pushFrame, cad)
 	}
 }
 
@@ -216,7 +221,8 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	}
 	st := &appState{}
 	popup := replay.FindPopup(capturePath)
-	jokeShown := false
+	jokeStep := 0
+	animOn := false
 	selFrame, selOK := 0, false
 	if mode == "input" {
 		selFrame, selOK = findSelectionFrame(cap)
@@ -224,7 +230,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -260,20 +266,39 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			// A window-close: the GUI sends the system command "/i". Answer
 			// with the joke popup once, then accept the next click (any
 			// button) by closing.
-			if perr == nil && isClose(diag.ParseItems(m.Body)) {
-				if jp := jokePopup(popup); jp != nil && !jokeShown {
-					jokeShown = true
-					_ = send("joke popup: Where are you going??? FIORI???", jp)
+			if perr == nil && jokeStep == 0 && isClose(diag.ParseItems(m.Body)) {
+				if jp := jokePopup1(popup); jp != nil {
+					jokeStep = 1
+					_ = send("joke popup 1: Where are you going???", jp)
 					continue
 				}
 				closeSession()
-				log("window close accepted")
+				log("window close accepted (no popup template)")
 				return
 			}
-			if jokeShown {
+			if jokeStep == 1 {
+				if jp := jokePopup2(popup); jp != nil {
+					jokeStep = 2
+					_ = send("joke popup 2: =(", jp)
+					continue
+				}
 				closeSession()
-				log("closing after the joke")
 				return
+			}
+			if jokeStep == 2 {
+				closeSession()
+				log("closing after the two jokes")
+				return
+			}
+			// /o (new window) turns the current window into an animation.
+			if perr == nil && animOn == false && isNewWindow(diag.ParseItems(m.Body)) {
+				animOn = true
+				log("/o: starting animation in this window")
+				go push(ctx, c, animRenderer(cap, screenFrame, log), 150*time.Millisecond, log)
+				continue
+			}
+			if animOn {
+				continue
 			}
 			if mode == "input" {
 				var client []diag.FieldValue
@@ -319,7 +344,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list") && pushing == nil {
+			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -429,6 +454,17 @@ func statesRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)
 // isClose reports whether a client frame is the window-close request: the
 // GUI sends the system command "/i" in a VARINFO.04 item when the user
 // shuts the window.
+// isNewWindow reports whether the client sent the /o system command, the
+// one that opens a new session window.
+func isNewWindow(items []diag.Item) bool {
+	for _, it := range items {
+		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x04 && strings.HasPrefix(strings.TrimSpace(string(it.Value)), "/o") {
+			return true
+		}
+	}
+	return false
+}
+
 func isClose(items []diag.Item) bool {
 	for _, it := range items {
 		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x04 && strings.TrimSpace(string(it.Value)) == "/i" {
@@ -442,7 +478,7 @@ func isClose(items []diag.Item) bool {
 // for a joke: "Where are you going?" with two buttons that both say No.
 // Reusing the captured frame keeps it a real modal dialog box; only the
 // DYNT_ATOM changes. Empty when the capture had no popup to borrow.
-func jokePopup(popup []byte) []byte {
+func popupWith(popup []byte, scr *frame.Screen) []byte {
 	if popup == nil {
 		return nil
 	}
@@ -455,11 +491,6 @@ func jokePopup(popup []byte) []byte {
 		if it.Type != diag.ItemAPPL4 || it.ID != 0x09 || it.SID != 0x02 {
 			continue
 		}
-		scr := frame.New(6, 60).
-			Text(1, 7, "Where are you going???").
-			Text(2, 7, "FIORI???").
-			Button(4, 7, 10, "No", "=NO1").
-			Button(4, 20, 10, "No", "=NO2")
 		items[i].Value = scr.Encode()
 		h := m.Header
 		h.Compress = 0
@@ -470,6 +501,77 @@ func jokePopup(popup []byte) []byte {
 		return out
 	}
 	return nil
+}
+
+// jokePopup1 asks where you are going, with two buttons that both say No.
+func jokePopup1(popup []byte) []byte {
+	return popupWith(popup, frame.New(6, 60).
+		Text(1, 7, "Where are you going???").
+		Text(2, 7, "FIORI???").
+		Button(4, 7, 10, "No", "=NO1").
+		Button(4, 20, 10, "No", "=NO2"))
+}
+
+// jokePopup2 is the sad face with a single ok.
+func jokePopup2(popup []byte) []byte {
+	return popupWith(popup, frame.New(6, 60).
+		Text(1, 7, "=(").
+		Button(3, 7, 10, "ok", "=OK"))
+}
+
+// animScreen is one frame of a timed animation: a scrolling marquee and a
+// sine wave of stars that moves with t. Every element is a label, so it
+// draws on a real GUI and in the TUI alike. This is the effect-engine
+// kernel — each tick writes a fresh screen.
+func animScreen(t int) *frame.Screen {
+	const w, h = 78, 20
+	scr := frame.New(27, 120)
+	// A marquee scrolling left across the top.
+	banner := "  OPEN-DIAG-GO-PRO  ***  a screen SAP GUI draws, driven by Go  ***"
+	off := t % len(banner)
+	line := (banner + banner)[off : off+w]
+	scr.Text(0, 1, line)
+	// A sine wave of stars.
+	for x := 0; x < w; x++ {
+		y := h/2 + int(float64(h/2-1)*math.Sin(float64(x+t)/6.0))
+		if y >= 0 && y < h {
+			scr.Text(2+y, 1+x, "*")
+		}
+	}
+	scr.Text(24, 1, fmt.Sprintf("frame %d   (press F3/Back or close to stop)", t))
+	return scr
+}
+
+// animRenderer wraps the located screen frame and animates its DYNT_ATOM.
+func animRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	atomIdx := -1
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			atomIdx = i
+		}
+	}
+	if atomIdx < 0 {
+		return func(int) []byte { return nil }
+	}
+	h := m.Header
+	h.Compress = 0
+	return func(n int) []byte {
+		items[atomIdx].Value = animScreen(n).Encode()
+		out, err := diag.EncodeMessage(h, items, false)
+		if err != nil {
+			return nil
+		}
+		return out
+	}
 }
 
 // staticScreen builds the screen for a static demo mode.
@@ -671,6 +773,8 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log 
 		return showcaseRenderer(cap, screenFrame, log)
 	case "states":
 		return statesRenderer(cap, screenFrame, log)
+	case "anim":
+		return animRenderer(cap, screenFrame, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }
