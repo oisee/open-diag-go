@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,88 @@ func main() {
 // rather than a fixed index, since a growing capture shifts the numbers:
 // the first server frame whose DYNT_ATOM names GV_TICKS is the screen, the
 // last is a steady counter frame to push from.
+
+// findSelectionFrame locates a captured selection screen by content: the
+// first server frame whose DYNT_ATOM has a field named P_MS. Its input
+// fields are in the dynpro definition, so the client submits what the user
+// types into them.
+func findSelectionFrame(cap *replay.Capture) (int, bool) {
+	for _, f := range cap.Server {
+		m, err := diag.ParseMessage(f.Data, false)
+		if err != nil {
+			continue
+		}
+		for _, it := range diag.ParseItems(m.Body) {
+			if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+				if _, byName := diag.FieldIndex(it.Value); byName["P_MS"] != 0 || hasKey(byName, "P_MS") {
+					return f.Index, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func hasKey(m map[string]int, k string) bool { _, ok := m[k]; return ok }
+
+// inputRespond reads what the user typed into P_MS and shows it back with
+// its square, reusing the real selection screen's atoms so its dynpro
+// definition still matches and the client still submits. This is data in
+// and data out, our Go code the PBO and PAI.
+func inputRespond(cap *replay.Capture, selFrame int, client []diag.FieldValue, log func(string, ...any)) []byte {
+	f, ok := cap.ServerFrame(selFrame)
+	if !ok {
+		return nil
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return nil
+	}
+	items := diag.ParseItems(m.Body)
+	for i, it := range items {
+		if it.Type != diag.ItemAPPL4 || it.ID != 0x09 || it.SID != 0x02 {
+			continue
+		}
+		atoms, byName := diag.FieldIndex(it.Value)
+		// The value the user left in P_MS: the client echoes it at the same
+		// cell the server placed the field.
+		typed := ""
+		if idx, ok := byName["P_MS"]; ok {
+			ms := atoms[idx]
+			for _, fv := range client {
+				if fv.Row == ms.Row && fv.Col == ms.Col {
+					typed = strings.TrimSpace(fv.Value)
+				}
+			}
+		}
+		n, perr := strconv.Atoi(typed)
+		diag.SetField(atoms, byName, "P_MS", typed)
+		if perr == nil {
+			diag.SetField(atoms, byName, "P_TICKS", strconv.Itoa(n*n))
+			diag.SetField(atoms, byName, "P_BAR", fmt.Sprintf("%d squared is %d", n, n*n))
+			diag.SetField(atoms, byName, "P_TIME", "ok")
+		} else if typed != "" {
+			diag.SetField(atoms, byName, "P_BAR", "type a whole number")
+			diag.SetField(atoms, byName, "P_TIME", "?")
+		}
+		log("input: P_MS=%q -> %s", typed, func() string {
+			if perr == nil {
+				return strconv.Itoa(n * n)
+			}
+			return "n/a"
+		}())
+		items[i].Value = diag.EncodeDyntAtoms(atoms)
+		h := m.Header
+		h.Compress = 0
+		out, err := diag.EncodeMessage(h, items, false)
+		if err != nil {
+			return nil
+		}
+		return out
+	}
+	return nil
+}
+
 func findCounterFrames(cap *replay.Capture) (screen, pushIdx int, ok bool) {
 	first, last := -1, -1
 	for _, f := range cap.Server {
@@ -120,6 +203,13 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 		group = menuAt
 	}
 	st := &appState{}
+	selFrame, selOK := 0, false
+	if mode == "input" {
+		selFrame, selOK = findSelectionFrame(cap)
+		if selOK {
+			log("selection screen located by content: server frame #%d", selFrame)
+		}
+	}
 	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
@@ -152,6 +242,18 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				log("<- client frame, %d bytes, %s, %d items", len(payload), m.Header, len(diag.ParseItems(m.Body)))
 			} else {
 				log("<- client frame, %d bytes (%v)", len(payload), perr)
+			}
+			if mode == "input" {
+				var client []diag.FieldValue
+				if perr == nil {
+					client = diag.ClientFields(diag.ParseItems(m.Body))
+				}
+				if selOK {
+					if out := inputRespond(cap, selFrame, client, log); out != nil {
+						_ = send("selection screen with the answer", out)
+					}
+				}
+				continue
 			}
 			if mode == "app" {
 				st.turns++
