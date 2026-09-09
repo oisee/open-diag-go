@@ -117,3 +117,17 @@ func ParseMessage(payload []byte, firstFromClient bool) (*Message, error) {
 // beUint16 and friends read what the items need.
 func beUint16(b []byte) int { return int(binary.BigEndian.Uint16(b)) }
 func beUint32(b []byte) int { return int(binary.BigEndian.Uint32(b)) }
+
+// NIControl recognises the NI layer's own keepalive payloads, which carry
+// no DIAG header: "NI_PING" and "NI_PONG", eight bytes with a trailing
+// NUL. Confirmed on the Phase 0 capture.
+func NIControl(payload []byte) (string, bool) {
+	if len(payload) != 8 {
+		return "", false
+	}
+	switch string(payload[:7]) {
+	case "NI_PING", "NI_PONG":
+		return string(payload[:7]), true
+	}
+	return "", false
+}

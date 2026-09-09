@@ -2,7 +2,9 @@
 
 Phases, with a gate on Phase 0.
 
-**Phase 0 — the probe and the kick. GO / NO-GO.** On the sandbox, a report in
+**Phase 0 — the probe and the kick. GO / NO-GO. → GO, see [phase0.md](phase0.md):
+there is no kick item; the server pushes screens on its own, 305 ms apart on
+the probe.** On the sandbox, a report in
 the spirit of ZTETRIS: a screen that redraws itself on an aRFC timer. Capture
 the traffic, find and decode the item with which the server makes the GUI send
 a PAI. Output: the kick's exact signature. If it is not in the stream — if the
@@ -16,8 +18,8 @@ icons, title, status) and the kick.
 DIAG. Done when a real SAP GUI connects to our server and draws one still
 screen from our description.
 
-**Phase 3 — the timer and the first moving frame.** Timer → kick → PAI arrives
-→ next frame. One effect (starfield), proof of animation.
+**Phase 3 — the timer and the first moving frame.** Timer → next frame,
+pushed (Phase 0 showed no PAI is needed). One effect (starfield), proof of animation.
 
 **Phase 4 — the effect engine and the timeline.** bytebeat-abap's `ZCL_O4D_*`
 on the frame model; the `ZCL_O4D_DEMO` orchestrator as it is, with a widget

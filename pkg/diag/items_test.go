@@ -31,3 +31,12 @@ func TestParseItems(t *testing.T) {
 		t.Errorf("header: %+v", h)
 	}
 }
+
+func TestNIControl(t *testing.T) {
+	if n, ok := NIControl([]byte("NI_PONG\x00")); !ok || n != "NI_PONG" {
+		t.Errorf("pong: %q %v", n, ok)
+	}
+	if _, ok := NIControl([]byte{0, 0, 0, 0, 0, 0, 0, 1}); ok {
+		t.Error("a header taken for a ping")
+	}
+}

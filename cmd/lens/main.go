@@ -67,6 +67,10 @@ func main() {
 			seenClient[l.Conn] = true
 		}
 		fmt.Printf("== +%7.3fs %s conn %d #%d  %d bytes\n", l.At.Sub(first).Seconds(), l.Dir, l.Conn, l.Index, l.Len)
+		if name, ok := diag.NIControl(payload); ok {
+			fmt.Printf("   %s (NI keepalive, no DIAG header)\n", name)
+			continue
+		}
 		m, err := diag.ParseMessage(payload, firstFromClient)
 		if m == nil {
 			fmt.Printf("   not diag: %v\n   %s\n", err, hex.EncodeToString(head(payload, 32)))
