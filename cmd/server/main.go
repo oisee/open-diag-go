@@ -896,63 +896,51 @@ func demoScenes() []scene {
 	}
 }
 
-// nativeLogon draws the SAP logon screen the way the capture showed it: the
-// four fields at their real rows and columns (Client, User, Password, Logon
-// Language), the Information box to the right, and the public trial welcome
-// text below — placeholder values only, never the captured credentials. This
-// is the still opening frame, indistinguishable from the real thing.
-func nativeLogon(scr *frame.Screen) {
-	scr.Text(1, 2, "Client")
-	scr.Input(1, 21, 3, "MANDT", "001")
-	scr.Text(3, 2, "User")
-	scr.Input(3, 21, 12, "BNAME", "")
-	scr.Text(4, 2, "Password")
-	scr.InputHidden(4, 21, 12, "BCODE", "")
-	scr.Text(6, 2, "Logon Language")
-	scr.Input(6, 21, 2, "LANGU", "EN")
-	scr.Frame(1, 40, 44, 7, "Information")
-	welcome := []string{
-		"ABAP Cloud Developer Trial 2023 initial shipment",
-		"",
-		"Since ABAP Cloud Developer Trial is a free offering for education",
-		"and demo purposes only, we offer it with SAP Community support.",
-		"That means that no primary support is available for this product.",
-	}
-	for i, l := range welcome {
-		scr.Text(11+i, 2, l)
-	}
-}
-
-// drawLogin places the compact logon field box at (top,left) for the moving
-// and orbiting phases — the same four fields, boxed so a flying copy reads as
-// one object. The index keeps each copy's field names distinct.
-func drawLogin(scr *frame.Screen, top, left, idx int) {
+// loginFields places the four logon fields as loose elements at (top,left):
+// no box around them, just the labels and inputs the way the real screen has
+// them (label, then input 19 columns over), so a copy that moves or multiplies
+// is fields on the canvas, not a widget in a frame. idx keeps each copy's
+// field names distinct.
+func loginFields(scr *frame.Screen, top, left, idx int) {
 	if top < 0 {
 		top = 0
 	}
 	if left < 0 {
 		left = 0
 	}
-	scr.Frame(top, left, 32, 7, "SAP")
-	scr.Text(top+1, left+2, "Client")
-	scr.Input(top+1, left+13, 3, fmt.Sprintf("MANDT%d", idx), "001")
-	scr.Text(top+2, left+2, "User")
-	scr.Input(top+2, left+13, 14, fmt.Sprintf("BNAME%d", idx), "")
-	scr.Text(top+3, left+2, "Password")
-	scr.InputHidden(top+3, left+13, 14, fmt.Sprintf("BCODE%d", idx), "")
-	scr.Text(top+5, left+2, "Logon Language")
-	scr.Input(top+5, left+18, 2, fmt.Sprintf("LANGU%d", idx), "EN")
+	scr.Text(top+0, left+0, "Client")
+	scr.Input(top+0, left+19, 3, fmt.Sprintf("MANDT%d", idx), "001")
+	scr.Text(top+2, left+0, "User")
+	scr.Input(top+2, left+19, 12, fmt.Sprintf("BNAME%d", idx), "")
+	scr.Text(top+3, left+0, "Password")
+	scr.InputHidden(top+3, left+19, 12, fmt.Sprintf("BCODE%d", idx), "")
+	scr.Text(top+5, left+0, "Logon Language")
+	scr.Input(top+5, left+19, 2, fmt.Sprintf("LANGU%d", idx), "EN")
+}
+
+// nativeLogon draws the logon screen the way the capture showed it: the four
+// loose fields at their real rows and columns, and the Information box to the
+// right whose lines are output fields beginning with the @0S@ info icon — the
+// same output-field-with-icon the real screen uses. Placeholder values only,
+// never the captured credentials.
+func nativeLogon(scr *frame.Screen) {
+	loginFields(scr, 1, 2, 0)
+	scr.Frame(1, 40, 46, 20, "Information")
+	scr.Output(2, 42, 66, "INFO0", "@0S@ ABAP Cloud Developer Trial 2023 initial shipment", false)
+	scr.Output(4, 42, 66, "INFO1", "@0S@ Since ABAP Cloud Developer Trial is a free offering for education", false)
+	scr.Output(5, 42, 66, "INFO2", "and demo purposes only, we offer it with SAP Community support.", false)
+	scr.Output(6, 42, 66, "INFO3", "That means that no primary support is available for this product.", false)
 }
 
 // orbitLogins draws count logon forms orbiting a centre at the given angle,
 // spaced evenly round the circle.
 func orbitLogins(scr *frame.Screen, ang float64, count int) {
-	const cx, cy, rx, ry = 40.0, 9.0, 32.0, 6.0
+	const cx, cy, rx, ry = 38.0, 9.0, 30.0, 6.0
 	for i := 0; i < count; i++ {
 		a := ang + float64(i)*(2.0*math.Pi/float64(count))
 		left := int(cx + rx*math.Cos(a))
 		top := int(cy + ry*math.Sin(a))
-		drawLogin(scr, top, left, i)
+		loginFields(scr, top, left, i)
 	}
 }
 
@@ -983,7 +971,7 @@ func sceneLogin(ts float64, scr *frame.Screen) {
 		default:
 			top = homeTop + (1-fr)*dy
 		}
-		drawLogin(scr, int(top), int(left), 0)
+		loginFields(scr, int(top), int(left), 0)
 	case ts < 18: // orbit, one form
 		orbitLogins(scr, (ts-12)*1.4, 1)
 	case ts < 22: // two forms
