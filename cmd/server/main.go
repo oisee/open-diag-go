@@ -627,17 +627,29 @@ func staticRespondWrap(cap *replay.Capture, wrapFrame int, scr *frame.Screen) []
 // frame that carries list segments (the SBA/SFE/SLC/VARINFO.0b stream) — the
 // list viewer's shell, which a colourful list of ours reuses.
 func findListFrame(cap *replay.Capture) (int, bool) {
+	// Prefer a plain WRITE list (our ZODGP_LIST, marked by "end of list"): it
+	// carries no controls, so its wrapper does not drag an SE16 settings
+	// dialog along the way a data-browser list would. Fall back to any list.
+	best, ok := 0, false
 	for _, f := range cap.Server {
 		m, err := diag.ParseMessage(f.Data, false)
 		if err != nil {
 			continue
 		}
 		items := diag.ParseItems(m.Body)
-		if diag.HasListSegments(items) && len(diag.ParseListItems(items)) > 5 {
-			return f.Index, true
+		if !diag.HasListSegments(items) || len(diag.ParseListItems(items)) <= 5 {
+			continue
+		}
+		if !ok {
+			best, ok = f.Index, true
+		}
+		for _, seg := range diag.ParseListItems(items) {
+			if strings.Contains(strings.ToLower(seg.Text), "end of list") {
+				return f.Index, true
+			}
 		}
 	}
-	return 0, false
+	return best, ok
 }
 
 // colourListSegments is the demo list: a heading, a rule, and rows in the
