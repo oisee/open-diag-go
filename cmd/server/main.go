@@ -528,9 +528,11 @@ func animScreen(t int) *frame.Screen {
 	scr := frame.New(27, 120)
 	// A marquee scrolling left across the top.
 	banner := "  OPEN-DIAG-GO-PRO  ***  a screen SAP GUI draws, driven by Go  ***"
-	off := t % len(banner)
-	line := (banner + banner)[off : off+w]
-	scr.Text(0, 1, line)
+	line := make([]byte, w)
+	for i := 0; i < w; i++ {
+		line[i] = banner[(t+i)%len(banner)]
+	}
+	scr.Text(0, 1, string(line))
 	// A sine wave of stars.
 	for x := 0; x < w; x++ {
 		y := h/2 + int(float64(h/2-1)*math.Sin(float64(x+t)/6.0))
