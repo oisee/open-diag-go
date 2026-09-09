@@ -43,11 +43,15 @@ const (
 // same icons three ways — WRITE ... AS ICON, the raw icon constant, and a
 // hand-typed '@0A@' string — and all three arrived as the identical bytes
 // (40 30 41 40) with the plain text SFE (0a 00 00); AS ICON changes nothing on
-// the wire. The same "@XX@" in a dynpro label does NOT become a picture (a
-// probe showed it print literally), so icon substitution is a property of the
-// list channel, not of the token. A coloured run can hold an icon and text at
-// once, so icons place by (row, col) like any other run — a colour stream of
-// little pictures.
+// the wire. A coloured run can hold an icon and text at once, so icons place by
+// (row, col) like any other run — a colour stream of little pictures.
+//
+// Where "@XX@" becomes a picture depends on the element, not the token. A
+// dynpro *label* (KEYWORD_2) prints it literally — a probe showed the raw
+// text. A dynpro *output field* (OFIELD_2) does substitute it: the real logon
+// screen's welcome lines are output fields beginning with @0S@, and the GUI
+// draws the info icon there. So icons reach a dynpro screen too, through an
+// output field, not only through the list channel.
 //
 // The codes below are the ones ZODGP_ICON confirmed on the wire; the SAP icon
 // set has hundreds more, each a "@XX@" of the same shape.

@@ -888,7 +888,6 @@ func demoScenes() []scene {
 		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce, 0, false},
 		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit, 0, false},
 		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0, false},
-		{"boxes", "nested frames breathing — the frame primitive as graphics", sceneBoxes, 0, false},
 		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0, false},
 		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix, 0, false},
 		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars, 0, false},
@@ -1026,24 +1025,6 @@ func sceneOrbit(ts float64, scr *frame.Screen) {
 		scr.ButtonH(row, col, w, h, centre(lab, w-2), fmt.Sprintf("=B%d", i))
 	}
 	scr.Text(int(cy), int(cx)-2, "( o )")
-}
-
-// sceneBoxes breathes four concentric frames in and out around the centre —
-// the FRAME atom used as a drawing primitive, a handful of elements a frame,
-// almost no bytes. The boxes are centred and modest: the outer is ~44x14,
-// not the whole screen.
-func sceneBoxes(ts float64, scr *frame.Screen) {
-	const cx, cy = 39, 10 // centre column, centre row
-	breath := (math.Sin(ts*2.0) + 1.0) / 2.0
-	names := []string{"DIAG", "no", "ABAP", "Go"}
-	for i := 0; i < 4; i++ {
-		hw := 22 - i*6 + int(breath*3.0) // half width: 22,16,10,4 (+breath)
-		hh := 7 - i*2                    // half height: 7,5,3,1
-		if hw < 3 || hh < 1 {
-			continue
-		}
-		scr.Frame(cy-hh, cx-hw, hw*2, hh*2, names[i])
-	}
 }
 
 // sceneEqualizer is a row of narrow buttons whose Height rises and falls in a
