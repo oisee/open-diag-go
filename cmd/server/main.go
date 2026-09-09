@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/oisee/open-rfc-go/ni"
@@ -65,6 +66,32 @@ func main() {
 	}
 }
 
+// findCounterFrames locates the probe's screen in the capture by content
+// rather than a fixed index, since a growing capture shifts the numbers:
+// the first server frame whose DYNT_ATOM names GV_TICKS is the screen, the
+// last is a steady counter frame to push from.
+func findCounterFrames(cap *replay.Capture) (screen, pushIdx int, ok bool) {
+	first, last := -1, -1
+	for _, f := range cap.Server {
+		m, err := diag.ParseMessage(f.Data, false)
+		if err != nil {
+			continue
+		}
+		for _, it := range diag.ParseItems(m.Body) {
+			if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 && strings.Contains(string(it.Value), "GV_TICKS") {
+				if first < 0 {
+					first = f.Index
+				}
+				last = f.Index
+			}
+		}
+	}
+	if first < 0 {
+		return 0, 0, false
+	}
+	return first, last, true
+}
+
 func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, menuAt, screenFrame, pushFrame int, cadence time.Duration) {
 	defer c.Close()
 	log := func(format string, a ...any) {
@@ -91,6 +118,12 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	group := 0
 	if mode == "menu" || mode == "counter" {
 		group = menuAt
+	}
+	if mode == "counter" || mode == "flash" || mode == "synth" {
+		if sf, pf, ok := findCounterFrames(cap); ok {
+			screenFrame, pushFrame = sf, pf
+			log("counter screen located by content: screen #%d, push #%d", sf, pf)
+		}
 	}
 	var pushing chan struct{}
 	for {
