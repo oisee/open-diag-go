@@ -148,3 +148,31 @@ func GroupListLines(segs []ListSegment) []ListLine {
 	}
 	return lines
 }
+
+// EncodeListItems is the inverse of ParseListItems: it lays each segment out
+// as the trio the wire wants — SBA (row, col), SFE (a text-run marker, the
+// colour, a zero), SLC (the length, big-endian) — then the run's text in a
+// VARINFO.0b item. A server sends these in place of a captured list's own
+// stream to draw a list of its own, in colour.
+func EncodeListItems(segs []ListSegment) []Item {
+	var out []Item
+	for _, s := range segs {
+		attr := s.Attr
+		if attr == ([3]byte{}) {
+			attr = [3]byte{0x0a, s.Color, 0x00} // a text run in the given colour
+		}
+		n := len(s.Text)
+		out = append(out,
+			Item{Type: ItemSBA, Value: []byte{byte(s.Row), byte(s.Col)}},
+			Item{Type: ItemSFE, Value: []byte{attr[0], attr[1], attr[2]}},
+			Item{Type: ItemSLC, Value: []byte{byte(n >> 8), byte(n)}},
+			Item{Type: ItemAPPL, ID: 0x0c, SID: 0x0b, Value: []byte(s.Text)},
+		)
+	}
+	return out
+}
+
+// ListText is a coloured run at a row and column.
+func ListText(row, col int, color byte, text string) ListSegment {
+	return ListSegment{Row: row, Col: col, Color: color, Length: len(text), Text: text, Status: Confirmed}
+}

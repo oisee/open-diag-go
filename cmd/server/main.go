@@ -225,13 +225,19 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	animOn := false
 	animCadence := cadence
 	selFrame, selOK := 0, false
+	if mode == "colorlist" {
+		if lf, ok := findListFrame(cap); ok {
+			screenFrame = lf
+			log("list frame located by content: server frame #%d", lf)
+		}
+	}
 	if mode == "input" {
 		selFrame, selOK = findSelectionFrame(cap)
 		if selOK {
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "colorlist" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -345,7 +351,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim") && pushing == nil {
+			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -360,7 +366,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				// A static screen is sent once and left alone; only the
 				// animated modes keep pushing on a timer. Pushing a static
 				// screen every tick overwrote what the user was typing.
-				if mode == "list" {
+				if mode == "list" || mode == "colorlist" {
 					// a list is static: sent once, no timer.
 				} else {
 					go push(ctx, c, rend, cadence, pushing, log)
@@ -617,6 +623,89 @@ func staticRespondWrap(cap *replay.Capture, wrapFrame int, scr *frame.Screen) []
 	return nil
 }
 
+// findListFrame locates a captured classic-list frame by content: a server
+// frame that carries list segments (the SBA/SFE/SLC/VARINFO.0b stream) — the
+// list viewer's shell, which a colourful list of ours reuses.
+func findListFrame(cap *replay.Capture) (int, bool) {
+	for _, f := range cap.Server {
+		m, err := diag.ParseMessage(f.Data, false)
+		if err != nil {
+			continue
+		}
+		items := diag.ParseItems(m.Body)
+		if diag.HasListSegments(items) && len(diag.ParseListItems(items)) > 5 {
+			return f.Index, true
+		}
+	}
+	return 0, false
+}
+
+// colourListSegments is the demo list: a heading, a rule, and rows in the
+// list colours, so the whole palette shows at once.
+func colourListSegments() []diag.ListSegment {
+	segs := []diag.ListSegment{
+		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  a colourful classic list, drawn by Go"),
+		diag.ListText(2, 2, diag.ColHeading, "colour"),
+		diag.ListText(2, 20, diag.ColHeading, "sample text"),
+	}
+	rows := []struct {
+		name  string
+		color byte
+	}{
+		{"NORMAL", diag.ColNormal}, {"KEY", diag.ColKey}, {"POSITIVE", diag.ColPositive},
+		{"NEGATIVE", diag.ColNegative}, {"TOTAL", diag.ColTotal}, {"GROUP", diag.ColGroup},
+	}
+	for i, r := range rows {
+		row := 4 + i
+		segs = append(segs,
+			diag.ListText(row, 2, diag.ColNormal, r.name),
+			diag.ListText(row, 20, r.color, "the quick brown fox 12345"),
+		)
+	}
+	segs = append(segs, diag.ListText(4+len(rows)+1, 2, diag.ColNormal, "each row uses one FORMAT COLOR; set the colours in your theme"))
+	return segs
+}
+
+// colorlistRenderer splices a colourful list into the captured list frame:
+// its own list stream is dropped and ours put in its place, everything else
+// (the env block, the list dynpro, EOM) kept.
+func colorlistRenderer(cap *replay.Capture, listFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(listFrame)
+	if !ok {
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	var keep []diag.Item
+	insertAt := -1
+	for _, it := range items {
+		isList := it.Type == diag.ItemSBA || it.Type == diag.ItemSFE || it.Type == diag.ItemSLC ||
+			(it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x0b)
+		if isList {
+			if insertAt < 0 {
+				insertAt = len(keep)
+			}
+			continue
+		}
+		keep = append(keep, it)
+	}
+	if insertAt < 0 {
+		insertAt = len(keep)
+	}
+	mine := diag.EncodeListItems(colourListSegments())
+	final := append(append(append([]diag.Item{}, keep[:insertAt]...), mine...), keep[insertAt:]...)
+	h := m.Header
+	h.Compress = 0
+	payload, err := diag.EncodeMessage(h, final, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	return func(int) []byte { return payload }
+}
+
 // staticScreen builds the screen for a static demo mode.
 func staticScreen(mode string) *frame.Screen {
 	switch mode {
@@ -818,6 +907,8 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log 
 		return statesRenderer(cap, screenFrame, log)
 	case "anim":
 		return animRenderer(cap, screenFrame, log)
+	case "colorlist":
+		return colorlistRenderer(cap, screenFrame, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }

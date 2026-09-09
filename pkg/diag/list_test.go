@@ -102,3 +102,21 @@ func TestGroupListLines(t *testing.T) {
 		t.Errorf("line 1 = %+v, want row 7 with 1 segment", lines[1])
 	}
 }
+
+func TestEncodeListItemsRoundTrip(t *testing.T) {
+	segs := []ListSegment{
+		ListText(0, 2, ColHeading, "Report"),
+		ListText(2, 2, ColKey, "key-1"),
+		ListText(2, 12, ColPositive, "+100"),
+	}
+	back := ParseListItems(EncodeListItems(segs))
+	if len(back) != 3 {
+		t.Fatalf("got %d", len(back))
+	}
+	if back[0].Row != 0 || back[0].Col != 2 || back[0].Color != ColHeading || back[0].Text != "Report" {
+		t.Errorf("heading: %+v", back[0])
+	}
+	if back[2].Color != ColPositive || back[2].Col != 12 || back[2].Text != "+100" {
+		t.Errorf("positive: %+v", back[2])
+	}
+}
