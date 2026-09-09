@@ -1144,13 +1144,16 @@ func sceneStars(ts float64, scr *frame.Screen) {
 // the index of the fields DYNT_ATOM, so the login scene can swap just the
 // fields into it and inherit everything else, native.
 type logonWrap struct {
-	items    []diag.Item
-	header   diag.Header
-	fieldIdx int
+	items      []diag.Item
+	header     diag.Header
+	fieldIdx   int // the DYNT_ATOM with the fields (and the native Information box)
+	welcomeIdx int // the DYNT_ATOM with the welcome text, or -1
 }
 
 // loadLogonWrap finds the captured logon screen — the server frame whose
-// DYNT_ATOM names RSYST-MANDT — and prepares it as that backdrop.
+// DYNT_ATOM names RSYST-MANDT — and prepares it as that backdrop, noting the
+// fields atom and the welcome-text atom so the login scene can keep the still
+// frame verbatim, then swap the fields and drop the welcome once it moves.
 func loadLogonWrap(cap *replay.Capture, log func(string, ...any)) (*logonWrap, bool) {
 	for _, f := range cap.Server {
 		m, err := diag.ParseMessage(f.Data, false)
@@ -1158,10 +1161,16 @@ func loadLogonWrap(cap *replay.Capture, log func(string, ...any)) (*logonWrap, b
 			continue
 		}
 		items := diag.ParseItems(m.Body)
-		fieldIdx := -1
+		fieldIdx, welcomeIdx := -1, -1
 		for i, it := range items {
-			if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 && strings.Contains(string(it.Value), "RSYST-MANDT") {
+			if it.Type != diag.ItemAPPL4 || it.ID != 0x09 || it.SID != 0x02 {
+				continue
+			}
+			v := string(it.Value)
+			if strings.Contains(v, "RSYST-MANDT") {
 				fieldIdx = i
+			} else if strings.Contains(v, "ABAP Cloud") || strings.Contains(v, "INFO_TAB") {
+				welcomeIdx = i
 			}
 		}
 		if fieldIdx < 0 {
@@ -1169,8 +1178,8 @@ func loadLogonWrap(cap *replay.Capture, log func(string, ...any)) (*logonWrap, b
 		}
 		h := m.Header
 		h.Compress = 0
-		log("logon wrap located: server frame #%d, fields atom #%d, %d items", f.Index, fieldIdx, len(items))
-		return &logonWrap{items: items, header: h, fieldIdx: fieldIdx}, true
+		log("logon wrap located: server frame #%d, fields atom #%d, welcome atom #%d, %d items", f.Index, fieldIdx, welcomeIdx, len(items))
+		return &logonWrap{items: items, header: h, fieldIdx: fieldIdx, welcomeIdx: welcomeIdx}, true
 	}
 	return nil, false
 }
@@ -1183,7 +1192,8 @@ func loginFieldsScreen(ts float64) *frame.Screen {
 	const homeTop, homeLeft = 0, 1
 	const dx, dy = 44.0, 11.0
 	scr := frame.New(27, 120)
-	scr.Frame(0, 35, 56, 19, "Information") // the box that lived in the fields atom
+	// No Information box here: the still frame is shown verbatim (native box),
+	// and once the fields move the box is meant to be gone.
 	switch {
 	case ts < 6:
 		loginFields(scr, homeTop, homeLeft, 0)
@@ -1284,7 +1294,15 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		// article, and only the fields move.
 		if scenes[idx].name == "login" && haveLogon {
 			out := append([]diag.Item{}, logon.items...)
-			out[logon.fieldIdx].Value = loginFieldsScreen(ts).Encode()
+			// Still: the captured frame verbatim — the real Information box and
+			// all. Moving: swap the fields for the flying ones (no box) and
+			// clear the welcome text, so the box is gone once it comes alive.
+			if ts >= 6 {
+				out[logon.fieldIdx].Value = loginFieldsScreen(ts).Encode()
+				if logon.welcomeIdx >= 0 {
+					out[logon.welcomeIdx].Value = nil
+				}
+			}
 			msg, err := diag.EncodeMessage(logon.header, out, false)
 			if err != nil {
 				return nil
