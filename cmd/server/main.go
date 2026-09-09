@@ -30,6 +30,8 @@ import (
 )
 
 var capturePath string
+var animMsgType byte
+var animMsgLoop int
 
 func main() {
 	listen := flag.String("listen", ":3201", "address SAP GUI connects to")
@@ -40,6 +42,8 @@ func main() {
 	screenFrame := flag.Int("screen", 209, "server frame index that shows the probe's screen (mode counter)")
 	pushFrame := flag.Int("push", 222, "server frame index the pushed counter frames are made from (mode counter)")
 	pushMS := flag.Int("push-ms", 300, "cadence of the pushed frames")
+	msgType := flag.String("msg-type", "W", "status message type to trigger a sound in anim: S, W, E or I (empty = none)")
+	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame)")
 	flag.Parse()
 
 	capturePath = *capture
@@ -68,10 +72,15 @@ func main() {
 			continue
 		}
 		cad := time.Duration(*pushMS) * time.Millisecond
-		if *mode == "anim" && *pushMS == 300 {
-			cad = 80 * time.Millisecond // faster default for animation; --push-ms overrides
+		if *mode == "anim" {
+			if *pushMS == 300 {
+				cad = 80 * time.Millisecond // faster default for animation
+			}
+			if cad < 60*time.Millisecond {
+				cad = 60 * time.Millisecond // a floor: the GUI cannot consume a full-screen frame faster
+			}
 		}
-		go serve(ctx, c, cap, *mode, *menuAt, *screenFrame, *pushFrame, cad)
+		go serve(ctx, c, cap, *mode, *menuAt, *screenFrame, *pushFrame, cad, msgByte(*msgType), *msgLoop)
 	}
 }
 
@@ -181,7 +190,7 @@ func findCounterFrames(cap *replay.Capture) (screen, pushIdx int, ok bool) {
 	return first, last, true
 }
 
-func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, menuAt, screenFrame, pushFrame int, cadence time.Duration) {
+func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, menuAt, screenFrame, pushFrame int, cadence time.Duration, msgType byte, msgLoop int) {
 	defer c.Close()
 	log := func(format string, a ...any) {
 		fmt.Fprintf(os.Stderr, "[%s] "+format+"\n", append([]any{c.RemoteAddr()}, a...)...)
@@ -221,16 +230,19 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	}
 	st := &appState{}
 	popup := replay.FindPopup(capturePath)
+	var listWrap []byte
+	if mode == "colorlist" {
+		listWrap = replay.FindListWrap(capturePath)
+		if listWrap != nil {
+			log("plain list wrapper located in the capture")
+		}
+	}
 	jokeStep := 0
 	animOn := false
 	animCadence := cadence
+	animMsgType = msgType
+	animMsgLoop = msgLoop
 	selFrame, selOK := 0, false
-	if mode == "colorlist" {
-		if lf, ok := findListFrame(cap); ok {
-			screenFrame = lf
-			log("list frame located by content: server frame #%d", lf)
-		}
-	}
 	if mode == "input" {
 		selFrame, selOK = findSelectionFrame(cap)
 		if selOK {
@@ -352,7 +364,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				continue
 			}
 			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist") && pushing == nil {
-				rend := renderer(mode, cap, screenFrame, pushFrame, log)
+				rend := renderer(mode, cap, screenFrame, pushFrame, listWrap, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
 					if f, ok := cap.ServerFrame(screenFrame); ok {
@@ -420,7 +432,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 					_ = send(fmt.Sprintf("the probe's screen (capture S->C #%d)", screenFrame), f.Data)
 				}
 				pushing = make(chan struct{})
-				go push(ctx, c, renderer(mode, cap, screenFrame, pushFrame, log), cadence, pushing, log)
+				go push(ctx, c, renderer(mode, cap, screenFrame, pushFrame, listWrap, log), cadence, pushing, log)
 			}
 		}
 	}
@@ -569,6 +581,7 @@ func animScreen(t int) *frame.Screen {
 
 // animRenderer wraps the located screen frame and animates its DYNT_ATOM.
 func animRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+	msgType, msgLoop := animMsgType, animMsgLoop
 	f, ok := cap.ServerFrame(wrapFrame)
 	if !ok {
 		return func(int) []byte { return nil }
@@ -589,14 +602,40 @@ func animRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 	}
 	h := m.Header
 	h.Compress = 0
+	base := items
 	return func(n int) []byte {
+		items := append([]diag.Item{}, base...)
 		items[atomIdx].Value = animScreen(n).Encode()
+		// A status message triggers the sound of its type. Sent on the first
+		// frame, and again every msgLoop frames when asked, so a track in
+		// that sound's WAV plays under the animation.
+		if msgType != 0 && (n == 1 || (msgLoop > 0 && n%msgLoop == 1)) {
+			msg := diag.StatusMessage(msgType, "odgp: now playing")
+			// insert before EOM so it is part of the screen
+			out := make([]diag.Item, 0, len(items)+1)
+			for _, it := range items {
+				if it.Type == diag.ItemEOM {
+					out = append(out, msg)
+				}
+				out = append(out, it)
+			}
+			items = out
+		}
 		out, err := diag.EncodeMessage(h, items, false)
 		if err != nil {
 			return nil
 		}
 		return out
 	}
+}
+
+// animRenderer's message type/loop are closed over from serve via package
+// state set below.
+func msgByte(s string) byte {
+	if s == "" {
+		return 0
+	}
+	return s[0]
 }
 
 // staticRespondWrap wraps a screen in the located screen frame, for a
@@ -681,12 +720,12 @@ func colourListSegments() []diag.ListSegment {
 // colorlistRenderer splices a colourful list into the captured list frame:
 // its own list stream is dropped and ours put in its place, everything else
 // (the env block, the list dynpro, EOM) kept.
-func colorlistRenderer(cap *replay.Capture, listFrame int, log func(string, ...any)) func(n int) []byte {
-	f, ok := cap.ServerFrame(listFrame)
-	if !ok {
+func colorlistRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte {
+	if wrap == nil {
+		log("no plain list frame in the capture to wrap")
 		return func(int) []byte { return nil }
 	}
-	m, err := diag.ParseMessage(f.Data, false)
+	m, err := diag.ParseMessage(wrap, false)
 	if err != nil {
 		return func(int) []byte { return nil }
 	}
@@ -907,7 +946,7 @@ func appRespond(cap *replay.Capture, wrapFrame int, st *appState) ([]byte, bool)
 	return nil, false
 }
 
-func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log func(string, ...any)) func(n int) []byte {
+func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, listWrap []byte, log func(string, ...any)) func(n int) []byte {
 	switch mode {
 	case "synth":
 		return synthRenderer(cap, pushFrame, log)
@@ -920,7 +959,7 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log 
 	case "anim":
 		return animRenderer(cap, screenFrame, log)
 	case "colorlist":
-		return colorlistRenderer(cap, screenFrame, log)
+		return colorlistRenderer(listWrap, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }
