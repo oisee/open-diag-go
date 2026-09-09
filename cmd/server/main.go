@@ -237,7 +237,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "colorlist" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
