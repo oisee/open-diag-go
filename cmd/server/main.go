@@ -1139,6 +1139,82 @@ func sceneStars(ts float64, scr *frame.Screen) {
 	}
 }
 
+// logonWrap is the captured logon screen kept as a backdrop: all of its items
+// (the real menu bar, the New password status entry, the Information text) plus
+// the index of the fields DYNT_ATOM, so the login scene can swap just the
+// fields into it and inherit everything else, native.
+type logonWrap struct {
+	items    []diag.Item
+	header   diag.Header
+	fieldIdx int
+}
+
+// loadLogonWrap finds the captured logon screen — the server frame whose
+// DYNT_ATOM names RSYST-MANDT — and prepares it as that backdrop.
+func loadLogonWrap(cap *replay.Capture, log func(string, ...any)) (*logonWrap, bool) {
+	for _, f := range cap.Server {
+		m, err := diag.ParseMessage(f.Data, false)
+		if err != nil {
+			continue
+		}
+		items := diag.ParseItems(m.Body)
+		fieldIdx := -1
+		for i, it := range items {
+			if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 && strings.Contains(string(it.Value), "RSYST-MANDT") {
+				fieldIdx = i
+			}
+		}
+		if fieldIdx < 0 {
+			continue
+		}
+		h := m.Header
+		h.Compress = 0
+		log("logon wrap located: server frame #%d, fields atom #%d, %d items", f.Index, fieldIdx, len(items))
+		return &logonWrap{items: items, header: h, fieldIdx: fieldIdx}, true
+	}
+	return nil, false
+}
+
+// loginFieldsScreen is the login scene when it runs inside the real logon
+// backdrop: only the fields (and the Information box that lived in the same
+// atom) — the menu, status and welcome text come from the capture. The phases
+// are the same as sceneLogin: still, a square drift, then orbiting copies.
+func loginFieldsScreen(ts float64) *frame.Screen {
+	const homeTop, homeLeft = 0, 1
+	const dx, dy = 44.0, 11.0
+	scr := frame.New(27, 120)
+	scr.Frame(0, 35, 56, 19, "Information") // the box that lived in the fields atom
+	switch {
+	case ts < 6:
+		loginFields(scr, homeTop, homeLeft, 0)
+	case ts < 12:
+		f := (ts - 6) / 6 * 4
+		seg := int(f)
+		fr := f - float64(seg)
+		top, left := float64(homeTop), float64(homeLeft)
+		switch seg {
+		case 0:
+			left = homeLeft + fr*dx
+		case 1:
+			left = homeLeft + dx
+			top = homeTop + fr*dy
+		case 2:
+			left = homeLeft + (1-fr)*dx
+			top = homeTop + dy
+		default:
+			top = homeTop + (1-fr)*dy
+		}
+		loginFields(scr, int(top), int(left), 0)
+	case ts < 18:
+		orbitLogins(scr, (ts-12)*1.4, 1)
+	case ts < 22:
+		orbitLogins(scr, (ts-12)*1.4, 2)
+	default:
+		orbitLogins(scr, (ts-12)*1.4, 3)
+	}
+	return scr
+}
+
 // demoRenderer cycles the scenes on a wall clock: each runs demoSceneMS
 // milliseconds, then the next, then back to the first. The renderer ignores
 // the frame counter push hands it and reads the real elapsed time, so the
@@ -1165,6 +1241,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 	h := m.Header
 	h.Compress = 0
 	base := items
+	logon, haveLogon := loadLogonWrap(cap, log)
 	scenes := demoScenes()
 	def := time.Duration(demoSceneMS) * time.Millisecond
 	if def <= 0 {
@@ -1200,6 +1277,19 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		if idx != lastScene {
 			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach)
 			lastScene = idx
+		}
+		// The login scene runs inside the real captured logon frame when we
+		// have one: swap just the fields atom, so the menu bar, the New
+		// password status entry and the Information text are all the genuine
+		// article, and only the fields move.
+		if scenes[idx].name == "login" && haveLogon {
+			out := append([]diag.Item{}, logon.items...)
+			out[logon.fieldIdx].Value = loginFieldsScreen(ts).Encode()
+			msg, err := diag.EncodeMessage(logon.header, out, false)
+			if err != nil {
+				return nil
+			}
+			return msg
 		}
 		scr := frame.New(27, 120)
 		scenes[idx].draw(ts, scr)
