@@ -208,7 +208,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -275,7 +275,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list") && pushing == nil {
+			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "showcase") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -323,6 +323,52 @@ var counterText = regexp.MustCompile(`\x20{4,9}[0-9]{1,6}\x20`)
 // replaced, the header's stat=f0 kept as the capture had it.
 // renderer picks how the pushed frames are built: synth from our own
 // frame.Screen, or a patch of a captured frame.
+// showcaseScreen draws one of every element the encoder knows, so a real
+// GUI and the TUI both show the whole vocabulary at once.
+func showcaseScreen() *frame.Screen {
+	return frame.New(27, 120).
+		Frame(0, 0, 64, 13, "Field types open-diag-go-pro can encode").
+		Text(1, 2, "label").Text(1, 16, "a static caption").
+		Text(2, 2, "output").Output(2, 16, 24, "F_OUT", "read-only text", false).
+		Text(3, 2, "number").Number(3, 16, 10, "F_NUM", 42).
+		Text(4, 2, "input").Input(4, 16, 24, "F_INP", "edit me").
+		Text(5, 2, "checkbox").Checkbox(5, 16, "F_CHK", "enabled", true).
+		Text(6, 2, "radio").Radio(6, 16, "F_RAD", "option A", true).
+		Radio(7, 16, "F_RAD", "option B", false).
+		Text(9, 2, "button").Button(9, 16, 16, "Press me", "=GO").
+		Text(11, 2, "frame is the box around all of this")
+}
+
+// showcaseRenderer wraps the located screen frame and swaps in the showcase.
+func showcaseRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	atomIdx := -1
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			atomIdx = i
+		}
+	}
+	if atomIdx < 0 {
+		return func(int) []byte { return nil }
+	}
+	items[atomIdx].Value = showcaseScreen().Encode()
+	h := m.Header
+	h.Compress = 0
+	payload, err := diag.EncodeMessage(h, items, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	return func(int) []byte { return payload }
+}
+
 // listRenderer builds a static classic list from frame.Lines and serves
 // it in the wrapper of the located screen frame — the write-list shown with
 // the primitives we have, no capture of a real list needed.
@@ -433,6 +479,8 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, log 
 		return synthRenderer(cap, pushFrame, log)
 	case "list":
 		return listRenderer(cap, screenFrame, log)
+	case "showcase":
+		return showcaseRenderer(cap, screenFrame, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }

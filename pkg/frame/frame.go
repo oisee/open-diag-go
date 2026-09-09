@@ -116,6 +116,26 @@ func (s *Screen) Lines(startRow int, lines []string) *Screen {
 	return s
 }
 
+// Frame draws a box of width by height with a title on its top edge.
+func (s *Screen) Frame(row, col, width, height int, title string) *Screen {
+	s.atoms = append(s.atoms, diag.Atom{EType: diag.AtomFrame, Row: row, Col: col,
+		Attr: diag.AttrProtected, Length: width, Height: height, Text: title, Status: diag.Confirmed})
+	return s
+}
+
+// Radio places a radio button with its label. Buttons of one group share a
+// name; on marks the selected one.
+func (s *Screen) Radio(row, col int, name, label string, on bool) *Screen {
+	state := byte(' ')
+	if on {
+		state = 'X'
+	}
+	s.atoms = append(s.atoms,
+		diag.Atom{EType: diag.AtomRadioButton, Row: row, Col: col, Attr: diag.AttrYes3D, Group: 1, State: state, Text: label, Status: diag.Inferred},
+		diag.FieldName(row, col, upper(name), diag.AttrYes3D))
+	return s
+}
+
 // Atoms is the screen as the atoms diag encodes.
 func (s *Screen) Atoms() []diag.Atom { return s.atoms }
 
