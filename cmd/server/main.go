@@ -1055,6 +1055,15 @@ func colourListSegments() []diag.ListSegment {
 		)
 	}
 	segs = append(segs, diag.ListText(4+len(rows)+1, 2, diag.ColNormal, "each row uses one FORMAT COLOR; set the colours in your theme"))
+	// A row of real icons, drawn by our own bytes: an icon is just the "@XX@"
+	// token in a text run, which the list channel turns into a picture.
+	iconRow := 4 + len(rows) + 3
+	segs = append(segs, diag.ListText(iconRow, 2, diag.ColHeading, "icons, drawn by Go:"))
+	icons := []string{diag.IconGreenLight, diag.IconYellowLight, diag.IconRedLight,
+		diag.IconLEDGreen, diag.IconChecked, diag.IconOkay, diag.IconCancel}
+	for i, ic := range icons {
+		segs = append(segs, diag.ListIcon(iconRow, 22+i*3, ic))
+	}
 	return segs
 }
 

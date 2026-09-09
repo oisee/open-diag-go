@@ -37,6 +37,41 @@ const (
 	ColGroup    = 0x07 // COL_GROUP, inferred
 )
 
+// An icon in a classic list is not a special item: it is the four ASCII bytes
+// "@XX@" sitting inside an ordinary VARINFO.0b text run, and the GUI swaps the
+// bitmap in on its own. This was read off ZODGP_ICON, whose list carried the
+// same icons three ways — WRITE ... AS ICON, the raw icon constant, and a
+// hand-typed '@0A@' string — and all three arrived as the identical bytes
+// (40 30 41 40) with the plain text SFE (0a 00 00); AS ICON changes nothing on
+// the wire. The same "@XX@" in a dynpro label does NOT become a picture (a
+// probe showed it print literally), so icon substitution is a property of the
+// list channel, not of the token. A coloured run can hold an icon and text at
+// once, so icons place by (row, col) like any other run — a colour stream of
+// little pictures.
+//
+// The codes below are the ones ZODGP_ICON confirmed on the wire; the SAP icon
+// set has hundreds more, each a "@XX@" of the same shape.
+const (
+	IconGreenLight  = "@08@" // a traffic light lit green
+	IconYellowLight = "@09@" // lit yellow
+	IconRedLight    = "@0A@" // lit red
+	IconLEDGreen    = "@5B@" // a small green block
+	IconChecked     = "@01@" // a check mark
+	IconOkay        = "@0V@" // a green check
+	IconCancel      = "@0W@" // a red cross
+)
+
+// Icon wraps a two-character SAP icon id in the "@XX@" the list channel
+// substitutes, so Icon("0A") is the red light. The confirmed ids have named
+// constants above; this is for reaching any of the rest.
+func Icon(id string) string { return "@" + id + "@" }
+
+// ListIcon is a run holding a single icon at a row and column — a picture
+// placed on the list grid the way ListText places text.
+func ListIcon(row, col int, icon string) ListSegment {
+	return ListText(row, col, ColOff, icon)
+}
+
 // sfeRuled is SFE byte 0 on a ruled run — the horizontal line a ULINE draws,
 // which arrives as a run of the character the SAP font renders as a line.
 // A text run carries 0x0a there instead. Inferred.
