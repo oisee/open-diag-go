@@ -51,7 +51,8 @@ func maybeRecolor(data []byte, log func(string, ...any)) []byte {
 		if it.ID != 0x08 { // RFC_TR
 			continue
 		}
-		if g, e := alv.DecodeGrid(it.Value); e != nil || len(g.Rows) == 0 {
+		g, e := alv.DecodeGrid(it.Value)
+		if e != nil || len(g.Rows) == 0 {
 			continue
 		}
 		patched, pe := alv.PatchColours(it.Value, func(row, col int) int {
