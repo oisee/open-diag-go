@@ -312,15 +312,19 @@ func decodeCellPacket(b []byte, cols []Column) (rows [][]string, colours [][]int
 	for _, st := range starts {
 		vals := map[int]string{}
 		clr := map[int]int{}
-		// A row is six 448-byte slots from the marker: slot 0 is the marker
-		// itself, slots carry colidx | rowidx | colourField | value.
-		for k := 0; k < 6; k++ {
+		// A row is a marker slot then one 448-byte slot per cell; each data
+		// slot carries colidx | rowidx | colourField | value. Walk slots until
+		// the next row's marker (or a small cap past the column count).
+		for k := 0; k <= ncol+1; k++ {
 			slot := st.off + k*cellSlot
 			if slot+cellSlotHdr > len(b) {
 				break
 			}
 			if bytes.Equal(b[slot:slot+4], cellRowMarker) {
-				continue // the row-marker slot, not a data cell
+				if k == 0 {
+					continue // this row's own marker slot
+				}
+				break // the next row's marker
 			}
 			colidx := int(binary.LittleEndian.Uint32(b[slot : slot+4]))
 			if colidx < 1 || colidx > ncol {
@@ -470,6 +474,67 @@ func EncodeRows(cols []Column, rows [][]string) ([]byte, error) {
 	outerPayload = append(outerPayload, innerCat...)
 	outerPayload = append(outerPayload, innerData...)
 
+	outerStream, err := Compress(outerPayload)
+	if err != nil {
+		return nil, err
+	}
+	return chunkRFC(outerStream), nil
+}
+
+// buildCellPacket serialises rows (and per-cell colours) into the wire cell
+// packet: per row a marker slot then one 448-byte slot per column, each
+// carrying colidx | rowidx | colourField | space-padded value.
+func buildCellPacket(cols []Column, rows [][]string, colours [][]int) []byte {
+	ncol := len(cols)
+	spaceFill := func(s []byte, from int) {
+		for i := from; i < len(s); i++ {
+			s[i] = ' '
+		}
+	}
+	buf := make([]byte, 0, len(rows)*(ncol+1)*cellSlot)
+	for r, row := range rows {
+		rownum := r + 1
+		marker := make([]byte, cellSlot)
+		copy(marker, cellRowMarker)
+		binary.LittleEndian.PutUint32(marker[4:8], uint32(rownum)) // marker[8:12] stays zero
+		spaceFill(marker, 12)
+		buf = append(buf, marker...)
+		for c := 0; c < ncol; c++ {
+			slot := make([]byte, cellSlot)
+			binary.LittleEndian.PutUint32(slot[0:4], uint32(c+1))
+			binary.LittleEndian.PutUint32(slot[4:8], uint32(rownum))
+			cf := 0
+			if r < len(colours) && c < len(colours[r]) {
+				cf = colours[r][c]
+			}
+			binary.LittleEndian.PutUint32(slot[8:12], uint32(cf))
+			spaceFill(slot, cellSlotHdr)
+			if c < len(row) {
+				copy(slot[cellSlotHdr:], row[c])
+			}
+			buf = append(buf, slot...)
+		}
+	}
+	return buf
+}
+
+// EncodeGrid is the inverse of DecodeGrid: it builds an RFC_TR value carrying
+// the catalog and the coloured cell data. colours may be nil (uncoloured) or a
+// grid parallel to rows of colour fields (see ColourField). The container is
+// the same simplified nesting EncodeRows uses — a round-trip through DecodeGrid
+// is exact; a live GUI needs the full automation wrapper (a later phase).
+func EncodeGrid(cols []Column, rows [][]string, colours [][]int) ([]byte, error) {
+	catalog := buildCatalog(cols)
+	data := buildCellPacket(cols, rows, colours)
+	innerCat, err := Compress(catalog)
+	if err != nil {
+		return nil, err
+	}
+	innerData, err := Compress(data)
+	if err != nil {
+		return nil, err
+	}
+	outerPayload := append(append([]byte{}, innerCat...), innerData...)
 	outerStream, err := Compress(outerPayload)
 	if err != nil {
 		return nil, err

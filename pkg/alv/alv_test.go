@@ -192,3 +192,56 @@ func TestCapturedStability(t *testing.T) {
 		t.Fatalf("rows not stable:\n first %v\n second %v", rows1, rows2)
 	}
 }
+
+// TestGridRoundTrip proves EncodeGrid → DecodeGrid recovers the exact cell
+// values AND per-cell colours — the coloured-ALV path.
+func TestGridRoundTrip(t *testing.T) {
+	cols := []Column{{"R", 73, 10}, {"V1", 67, 6}, {"V2", 67, 6}, {"V3", 67, 6}, {"V4", 67, 6}}
+	var rows [][]string
+	var colours [][]int
+	for r := 1; r <= 12; r++ {
+		rows = append(rows, []string{
+			// R is right-justified by SapColour-independent formatting.
+			padLeft(r), "AAAAAA", "BBBBBB", "CCCCCC", "DDDDDD"})
+		cf := []int{0}
+		for c := 1; c <= 4; c++ {
+			cf = append(cf, ColourField((r+c)%7+1, true, false))
+		}
+		colours = append(colours, cf)
+	}
+	blob, err := EncodeGrid(cols, rows, colours)
+	if err != nil {
+		t.Fatalf("EncodeGrid: %v", err)
+	}
+	g, err := DecodeGrid(blob)
+	if err != nil {
+		t.Fatalf("DecodeGrid: %v", err)
+	}
+	if len(g.Rows) != len(rows) {
+		t.Fatalf("row count: got %d want %d", len(g.Rows), len(rows))
+	}
+	for r := range rows {
+		for c := range cols {
+			if g.Rows[r][c] != rows[r][c] {
+				t.Errorf("cell[%d][%d] value: got %q want %q", r, c, g.Rows[r][c], rows[r][c])
+			}
+			if g.Colours[r][c] != colours[r][c] {
+				t.Errorf("cell[%d][%d] colour: got %d want %d", r, c, g.Colours[r][c], colours[r][c])
+			}
+		}
+	}
+}
+
+func padLeft(n int) string {
+	s := ""
+	for i := 0; i < 10; i++ {
+		s = "0" + s
+	}
+	d := []byte(s)
+	x := n
+	for i := 9; i >= 0 && x > 0; i-- {
+		d[i] = byte('0' + x%10)
+		x /= 10
+	}
+	return string(d)
+}
