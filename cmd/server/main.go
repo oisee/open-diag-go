@@ -671,8 +671,12 @@ func demoScenes() []scene {
 	return []scene{
 		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce},
 		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit},
+		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer},
 		{"boxes", "nested frames breathing — the frame primitive as graphics", sceneBoxes},
+		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake},
+		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix},
 		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars},
+		{"icons", "probe: does the GUI substitute @xx@ icon tokens in a label?", sceneIcons},
 	}
 }
 
@@ -723,21 +727,103 @@ func sceneOrbit(ts float64, scr *frame.Screen) {
 	scr.Text(int(cy), int(cx)-2, "( o )")
 }
 
-// sceneBoxes breathes four concentric frames in and out — the FRAME atom used
-// as a drawing primitive, a handful of elements a frame, almost no bytes.
+// sceneBoxes breathes four concentric frames in and out around the centre —
+// the FRAME atom used as a drawing primitive, a handful of elements a frame,
+// almost no bytes. The boxes are centred and modest: the outer is ~44x14,
+// not the whole screen.
 func sceneBoxes(ts float64, scr *frame.Screen) {
-	breath := (math.Sin(ts*2.0) + 1.0) / 2.0 // 0..1
+	const cx, cy = 39, 10 // centre column, centre row
+	breath := (math.Sin(ts*2.0) + 1.0) / 2.0
 	names := []string{"DIAG", "no", "ABAP", "Go"}
 	for i := 0; i < 4; i++ {
-		pad := i*3 + int(breath*4.0)
-		row := 1 + pad
-		col := 3 + pad*2
-		w := 72 - pad*4
-		h := 20 - pad*2
-		if w < 8 || h < 3 {
+		hw := 22 - i*6 + int(breath*3.0) // half width: 22,16,10,4 (+breath)
+		hh := 7 - i*2                    // half height: 7,5,3,1
+		if hw < 3 || hh < 1 {
 			continue
 		}
-		scr.Frame(row, col, w, h, names[i])
+		scr.Frame(cy-hh, cx-hw, hw*2, hh*2, names[i])
+	}
+}
+
+// sceneEqualizer is a row of narrow buttons whose Height rises and falls in a
+// travelling sine wave — the pushbutton Height field driven as a bar chart,
+// so the graphics live in the element's own dimensions, not in drawn glyphs.
+func sceneEqualizer(ts float64, scr *frame.Screen) {
+	const bars, baseRow = 12, 20 // bars stand on baseRow and grow upward
+	for i := 0; i < bars; i++ {
+		amp := (math.Sin(ts*3.0+float64(i)*0.5) + 1.0) / 2.0 // 0..1
+		h := 1 + int(amp*10.0)                               // 1..11 rows tall
+		col := 6 + i*6
+		scr.ButtonH(baseRow-h, col, 4, h, "", fmt.Sprintf("=EQ%d", i))
+	}
+	for c := 4; c < 6+bars*6; c++ {
+		scr.Text(baseRow, c, "-") // a floor the bars stand on
+	}
+}
+
+// sceneSnake walks a marker along a Lissajous path and draws a fading trail
+// behind it — each segment is one label, so the whole snake is a dozen-odd
+// bytes. The two frequencies are not commensurate, so the path never repeats
+// exactly.
+func sceneSnake(ts float64, scr *frame.Screen) {
+	const cx, cy, rx, ry = 39.0, 10.0, 30.0, 8.0
+	const seg = 16
+	for k := 0; k < seg; k++ {
+		tt := ts - float64(k)*0.05
+		col := int(cx + rx*math.Sin(tt*1.7))
+		row := int(cy + ry*math.Sin(tt*2.3))
+		ch := "O"
+		switch {
+		case k > 10:
+			ch = "."
+		case k > 4:
+			ch = "o"
+		}
+		scr.Text(row, col, ch)
+	}
+}
+
+// sceneMatrix drops sparse columns of glyphs down the screen, each column at
+// its own speed and phase, a short trail behind every head — the character
+// grid used lightly (every third column, a five-cell trail) rather than
+// filled edge to edge.
+func sceneMatrix(ts float64, scr *frame.Screen) {
+	const w, h = 78, 20
+	const glyphs = "01<>[]{}=+*/\\ABCDEF$#@abcdef"
+	for x := 0; x < w; x += 3 {
+		speed := 6.0 + float64((x*37)%11)
+		off := float64((x * 13) % 23)
+		head := int(math.Mod(ts*speed+off, float64(h+8)))
+		for t := 0; t < 5; t++ {
+			y := head - t
+			if y < 0 || y >= h {
+				continue
+			}
+			g := glyphs[(x+y*7+int(ts*10.0))%len(glyphs)]
+			scr.Text(1+y, 1+x, string(g))
+		}
+	}
+}
+
+// sceneIcons is a probe, not an effect: it lays a grid of SAP icon tokens
+// (@00@ .. @2F@) with their hex under each, to see whether a real GUI
+// substitutes the icon bitmap for the token inside a plain label. If the
+// tokens show as literal text, icons need the list channel or an icon field
+// and this label path is not enough — either way we learn it here. A slow
+// sweep highlights one cell so the scene still moves.
+func sceneIcons(ts float64, scr *frame.Screen) {
+	scr.Text(1, 2, "icon probe: if these become pictures, @xx@ works in a label")
+	const cols = 8
+	sweep := int(ts*6.0) % 48
+	for code := 0; code < 48; code++ {
+		r := 3 + (code/cols)*2
+		c := 4 + (code%cols)*9
+		mark := " "
+		if code == sweep {
+			mark = ">"
+		}
+		scr.Text(r, c, fmt.Sprintf("%s@%02X@", mark, code))
+		scr.Text(r+1, c+1, fmt.Sprintf("%02X", code))
 	}
 }
 
