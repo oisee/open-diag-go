@@ -385,12 +385,21 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				if perr == nil {
 					items := diag.ParseItems(m.Body)
 					fc := funcCode(items)
-					line := fmt.Sprintf("#%d fc=%q  %s", st.turns, fc, itemVals(items))
+					changed := echoDiff(st, items)
+					// The interesting part first: the function code, then what
+					// changed since the last press. Constant housekeeping is
+					// dropped, so a key that actually differs stands out.
+					head := "same"
+					if changed != "" {
+						head = changed
+					}
+					line := fmt.Sprintf("#%d fc=%q  %s", st.turns, fc, head)
 					st.echo = append(st.echo, line)
 					if len(st.echo) > 17 {
 						st.echo = st.echo[len(st.echo)-17:]
 					}
-					log("echo #%d fc=%q com=%02x type=%02x  %s", st.turns, fc, m.Header.ComFlag, m.Header.MsgType, itemVals(items))
+					log("echo #%d fc=%q com=%02x type=%02x  changed:{%s}  all:[%s]",
+						st.turns, fc, m.Header.ComFlag, m.Header.MsgType, changed, itemVals(items))
 				}
 				if out, ok := echoRespond(cap, screenFrame, st); ok {
 					_ = send("echo screen", out)
@@ -633,6 +642,61 @@ func itemVals(items []diag.Item) string {
 	return strings.Join(append(events, rest...), "  ")
 }
 
+// echoDiff compares this frame's screen/action items against the last one and
+// returns the ones that changed, value included. Housekeeping items (session,
+// user, system, RFC) are ignored, so what is left is what a keypress actually
+// moved. It updates the stored snapshot in place.
+func echoDiff(st *appState, items []diag.Item) string {
+	cur := map[string]string{}
+	for _, it := range items {
+		k := it.Key()
+		if strings.HasPrefix(k, "APPL ST_") || strings.HasPrefix(k, "APPL RFC_TR") ||
+			k == "SES" || k == "EOM" || k == "CHL" {
+			continue
+		}
+		cur[k] = fmt.Sprintf("%x", it.Value)
+	}
+	var changed []string
+	for _, it := range items { // report in wire order
+		k := it.Key()
+		v, ok := cur[k]
+		if !ok {
+			continue
+		}
+		if st.prev[k] != v {
+			changed = append(changed, fmt.Sprintf("%s=%s", k, showVal(it.Value)))
+		}
+		delete(cur, k) // so a repeated key is reported once
+	}
+	for k := range st.prev {
+		if _, stillHere := indexKey(items, k); !stillHere {
+			changed = append(changed, k+"(gone)")
+		}
+	}
+	// Rebuild the snapshot from the frame.
+	next := map[string]string{}
+	for _, it := range items {
+		k := it.Key()
+		if strings.HasPrefix(k, "APPL ST_") || strings.HasPrefix(k, "APPL RFC_TR") ||
+			k == "SES" || k == "EOM" || k == "CHL" {
+			continue
+		}
+		next[k] = fmt.Sprintf("%x", it.Value)
+	}
+	st.prev = next
+	return strings.Join(changed, "  ")
+}
+
+// indexKey reports whether any item carries the given key.
+func indexKey(items []diag.Item, key string) (int, bool) {
+	for i, it := range items {
+		if it.Key() == key {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // showVal is a value as printable text, with a hex tail for a short one so a
 // non-printable byte is still readable.
 func showVal(b []byte) string {
@@ -807,6 +871,9 @@ type scene struct {
 	name     string
 	approach string
 	draw     func(ts float64, scr *frame.Screen)
+	// dur is this scene's length; 0 means use the demo's default (-scene-ms).
+	// The login opener needs longer than a beat, so it sets its own.
+	dur time.Duration
 }
 
 // demoScenes are the acts, each a different way of getting motion onto a real
@@ -814,14 +881,86 @@ type scene struct {
 // bytes-per-frame is easy to feel.
 func demoScenes() []scene {
 	return []scene{
-		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce},
-		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit},
-		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer},
-		{"boxes", "nested frames breathing — the frame primitive as graphics", sceneBoxes},
-		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake},
-		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix},
-		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars},
-		{"icons", "probe: does the GUI substitute @xx@ icon tokens in a label?", sceneIcons},
+		{"login", "a login form that sits, drifts a square, orbits, then multiplies", sceneLogin, 26 * time.Second},
+		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce, 0},
+		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit, 0},
+		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0},
+		{"boxes", "nested frames breathing — the frame primitive as graphics", sceneBoxes, 0},
+		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0},
+		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix, 0},
+		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars, 0},
+		{"icons", "probe: does the GUI substitute @xx@ icon tokens in a label?", sceneIcons, 0},
+	}
+}
+
+// drawLogin places one almost-standard SAP logon form at (top,left). The
+// index keeps each copy's field names distinct when several are on screen.
+func drawLogin(scr *frame.Screen, top, left, idx int) {
+	if top < 0 {
+		top = 0
+	}
+	if left < 0 {
+		left = 0
+	}
+	scr.Frame(top, left, 30, 7, "SAP")
+	scr.Text(top+1, left+2, "Client")
+	scr.Input(top+1, left+12, 6, fmt.Sprintf("MANDT%d", idx), "001")
+	scr.Text(top+2, left+2, "User")
+	scr.Input(top+2, left+12, 14, fmt.Sprintf("BNAME%d", idx), "")
+	scr.Text(top+3, left+2, "Password")
+	scr.InputHidden(top+3, left+12, 14, fmt.Sprintf("BCODE%d", idx), "")
+	scr.Text(top+4, left+2, "Language")
+	scr.Input(top+4, left+12, 4, fmt.Sprintf("LANGU%d", idx), "EN")
+	scr.Button(top+5, left+2, 12, "Log On", fmt.Sprintf("=LOGIN%d", idx))
+}
+
+// orbitLogins draws count logon forms orbiting a centre at the given angle,
+// spaced evenly round the circle.
+func orbitLogins(scr *frame.Screen, ang float64, count int) {
+	const cx, cy, rx, ry = 40.0, 9.0, 32.0, 6.0
+	for i := 0; i < count; i++ {
+		a := ang + float64(i)*(2.0*math.Pi/float64(count))
+		left := int(cx + rx*math.Cos(a))
+		top := int(cy + ry*math.Sin(a))
+		drawLogin(scr, top, left, i)
+	}
+}
+
+// sceneLogin is the demo's opener: an ordinary-looking logon box that holds
+// still for a few seconds, then drifts once round a square, then orbits, then
+// becomes two, then three — a familiar thing behaving impossibly, all drawn by
+// Go. Its phases are keyed to ts (seconds into the scene).
+func sceneLogin(ts float64, scr *frame.Screen) {
+	const homeTop, homeLeft = 4, 10
+	const dx, dy = 44.0, 11.0 // the square's sides (wider than tall: cells are)
+	switch {
+	case ts < 6: // sit still, look normal
+		drawLogin(scr, homeTop, homeLeft, 0)
+		scr.Text(homeTop+8, homeLeft, "waiting for logon...")
+	case ts < 12: // one lap round a square: right, down, left, up
+		f := (ts - 6) / 6 * 4 // 0..4, one side per unit
+		seg := int(f)
+		fr := f - float64(seg)
+		top, left := float64(homeTop), float64(homeLeft)
+		switch seg {
+		case 0:
+			left = homeLeft + fr*dx
+		case 1:
+			left = homeLeft + dx
+			top = homeTop + fr*dy
+		case 2:
+			left = homeLeft + (1-fr)*dx
+			top = homeTop + dy
+		default:
+			top = homeTop + (1-fr)*dy
+		}
+		drawLogin(scr, int(top), int(left), 0)
+	case ts < 18: // orbit, one form
+		orbitLogins(scr, (ts-12)*1.4, 1)
+	case ts < 22: // two forms
+		orbitLogins(scr, (ts-12)*1.4, 2)
+	default: // three forms, then the demo moves on
+		orbitLogins(scr, (ts-12)*1.4, 3)
 	}
 }
 
@@ -1019,9 +1158,20 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 	h.Compress = 0
 	base := items
 	scenes := demoScenes()
-	sceneDur := time.Duration(demoSceneMS) * time.Millisecond
-	if sceneDur <= 0 {
-		sceneDur = 3 * time.Second
+	def := time.Duration(demoSceneMS) * time.Millisecond
+	if def <= 0 {
+		def = 3 * time.Second
+	}
+	// Each scene's length: its own if it set one, else the default beat.
+	durs := make([]time.Duration, len(scenes))
+	var total time.Duration
+	for i, s := range scenes {
+		d := s.dur
+		if d <= 0 {
+			d = def
+		}
+		durs[i] = d
+		total += d
 	}
 	var start time.Time
 	lastScene := -1
@@ -1029,13 +1179,16 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		if start.IsZero() {
 			start = time.Now()
 		}
-		total := sceneDur * time.Duration(len(scenes))
 		pos := time.Since(start) % total
-		idx := int(pos / sceneDur)
-		if idx >= len(scenes) {
-			idx = len(scenes) - 1
+		idx, acc := 0, time.Duration(0)
+		for i, d := range durs {
+			if pos < acc+d {
+				idx = i
+				break
+			}
+			acc += d
 		}
-		ts := (pos - time.Duration(idx)*sceneDur).Seconds()
+		ts := (pos - acc).Seconds()
 		if idx != lastScene {
 			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach)
 			lastScene = idx
@@ -1475,7 +1628,8 @@ type appState struct {
 	lastMS int
 	fields []diag.FieldValue
 	events []diag.Event
-	echo   []string // the echo server's recent-keypress log
+	echo   []string          // the echo server's recent-keypress log
+	prev   map[string]string // echo: last frame's item values, for the diff
 }
 
 // appScreen is the demo handler: it draws what the user has done. Each PAI
