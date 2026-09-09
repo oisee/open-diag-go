@@ -32,21 +32,24 @@ import (
 var capturePath string
 var animMsgType byte
 var animMsgLoop int
+var demoSceneMS int
 
 func main() {
 	listen := flag.String("listen", ":3201", "address SAP GUI connects to")
 	capture := flag.String("capture", "captures/probe.jsonl", "tap capture to replay")
 	conn := flag.Int("conn", 1, "connection of the capture to replay")
-	mode := flag.String("mode", "logon", "logon | menu | counter")
+	mode := flag.String("mode", "logon", "logon | menu | counter | widgets | anim | demo | colorlist | ...")
 	menuAt := flag.Int("menu-at", 2, "client frame index whose replies are the start menu (mode menu, counter)")
 	screenFrame := flag.Int("screen", 209, "server frame index that shows the probe's screen (mode counter)")
 	pushFrame := flag.Int("push", 222, "server frame index the pushed counter frames are made from (mode counter)")
 	pushMS := flag.Int("push-ms", 300, "cadence of the pushed frames")
 	msgType := flag.String("msg-type", "E", "status message to trigger a sound under the animation: S, W, E or I (empty = none)")
 	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame)")
+	sceneMS := flag.Int("scene-ms", 3000, "how long each scene of the demo mode runs, in milliseconds (wall clock, not frames)")
 	flag.Parse()
 
 	capturePath = *capture
+	demoSceneMS = *sceneMS
 	cap, err := replay.Load(*capture, *conn)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "server:", err)
@@ -72,7 +75,7 @@ func main() {
 			continue
 		}
 		cad := time.Duration(*pushMS) * time.Millisecond
-		if *mode == "anim" {
+		if *mode == "anim" || *mode == "demo" {
 			if *pushMS == 300 {
 				cad = 80 * time.Millisecond // faster default for the full-screen effect
 			}
@@ -252,7 +255,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			log("selection screen located by content: server frame #%d", selFrame)
 		}
 	}
-	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "widgets" {
+	if mode == "counter" || mode == "flash" || mode == "synth" || mode == "list" || mode == "app" || mode == "showcase" || mode == "states" || mode == "anim" || mode == "widgets" || mode == "demo" {
 		if sf, pf, ok := findCounterFrames(cap); ok {
 			screenFrame, pushFrame = sf, pf
 			log("counter screen located by content: screen #%d, push #%d", sf, pf)
@@ -366,7 +369,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist" || mode == "widgets") && pushing == nil {
+			if (mode == "flash" || mode == "synth" || mode == "list" || mode == "anim" || mode == "colorlist" || mode == "widgets" || mode == "demo") && pushing == nil {
 				rend := renderer(mode, cap, screenFrame, pushFrame, listWrap, log)
 				if mode == "flash" {
 					// flash replays the captured screen as it was.
@@ -388,7 +391,7 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			if (mode == "anim" || mode == "widgets" || animOn) && pushing != nil {
+			if (mode == "anim" || mode == "widgets" || mode == "demo" || animOn) && pushing != nil {
 				// While animating, any client frame is the user pressing a
 				// key (F3, Back, Enter): stop the animation and freeze the
 				// last frame. A window-close was handled just above.
@@ -647,6 +650,177 @@ func widgetsRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any
 			return nil
 		}
 		return out
+	}
+}
+
+// A scene is one act of the demo: a name, the approach it shows off, and a
+// draw that lays it onto the screen given ts — the seconds elapsed inside
+// this scene. Every scene is driven by wall-clock time, so the motion is the
+// same speed whatever the frame cadence, and a dropped frame never stutters
+// it: at 3 s a scene ends after 3 real seconds, not after N frames.
+type scene struct {
+	name     string
+	approach string
+	draw     func(ts float64, scr *frame.Screen)
+}
+
+// demoScenes are the acts, each a different way of getting motion onto a real
+// GUI, ordered from the lightest frame to the heaviest so the contrast in
+// bytes-per-frame is easy to feel.
+func demoScenes() []scene {
+	return []scene{
+		{"bounce", "one label bouncing — the fewest bytes a frame can carry", sceneBounce},
+		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit},
+		{"boxes", "nested frames breathing — the frame primitive as graphics", sceneBoxes},
+		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars},
+	}
+}
+
+// sceneBounce is a DVD-logo bounce: one label ricocheting off the edges. The
+// position is a triangle wave of ts, so it turns at the walls on its own.
+func sceneBounce(ts float64, scr *frame.Screen) {
+	const w, h = 66, 18
+	logo := "[ Go > DIAG ]"
+	px := triangle(ts*22.0, w-len(logo))
+	py := triangle(ts*9.0, h-1)
+	scr.Text(2+py, 4+px, logo)
+	scr.Text(int(3+py+1), 4+px, "  no ABAP  ")
+}
+
+// triangle bounces a value between 0 and span: it rises, hits the wall, and
+// comes back, forever.
+func triangle(x float64, span int) int {
+	if span <= 0 {
+		return 0
+	}
+	p := math.Mod(x, float64(2*span))
+	if p < 0 {
+		p += float64(2 * span)
+	}
+	if p > float64(span) {
+		p = float64(2*span) - p
+	}
+	return int(p)
+}
+
+// sceneOrbit is the three widgets orbiting counter-clockwise, each button
+// grown by its depth on the circle — the same effect as the widgets mode,
+// but its angle comes from ts so the spin is one turn every ~5.7 s whatever
+// the cadence.
+func sceneOrbit(ts float64, scr *frame.Screen) {
+	const cx, cy, rx, ry = 39.0, 11.0, 28.0, 8.0
+	const angSpeed = 1.1 // radians per second
+	labels := []string{"Go", "DIAG", "no ABAP"}
+	for i, lab := range labels {
+		ang := -ts*angSpeed + float64(i)*(2.0*math.Pi/3.0)
+		col := int(cx + rx*math.Cos(ang))
+		row := int(cy + ry*math.Sin(ang))
+		depth := (math.Sin(ang) + 1.0) / 2.0
+		w := 6 + int(depth*12.0)
+		h := 1 + int(depth*2.0+0.5)
+		scr.ButtonH(row, col, w, h, centre(lab, w-2), fmt.Sprintf("=B%d", i))
+	}
+	scr.Text(int(cy), int(cx)-2, "( o )")
+}
+
+// sceneBoxes breathes four concentric frames in and out — the FRAME atom used
+// as a drawing primitive, a handful of elements a frame, almost no bytes.
+func sceneBoxes(ts float64, scr *frame.Screen) {
+	breath := (math.Sin(ts*2.0) + 1.0) / 2.0 // 0..1
+	names := []string{"DIAG", "no", "ABAP", "Go"}
+	for i := 0; i < 4; i++ {
+		pad := i*3 + int(breath*4.0)
+		row := 1 + pad
+		col := 3 + pad*2
+		w := 72 - pad*4
+		h := 20 - pad*2
+		if w < 8 || h < 3 {
+			continue
+		}
+		scr.Frame(row, col, w, h, names[i])
+	}
+}
+
+// sceneStars is the starfield and marquee: the whole grid rewritten each
+// frame. Its scroll and wave phases come from ts, so it moves at a fixed
+// speed and the heavier payload does not change the animation's pace.
+func sceneStars(ts float64, scr *frame.Screen) {
+	const w, h = 78, 18
+	banner := "  OPEN-DIAG-GO-PRO  ***  the whole character grid, redrawn  ***  driven by Go  "
+	off := int(ts * 12.0) // 12 characters a second
+	line := make([]byte, w)
+	for i := 0; i < w; i++ {
+		line[i] = banner[(off+i)%len(banner)]
+	}
+	scr.Text(1, 1, string(line))
+	for x := 0; x < w; x++ {
+		y := h/2 + int(float64(h/2-1)*math.Sin(float64(x)/6.0+ts*2.0))
+		if y >= 0 && y < h {
+			scr.Text(3+y, 1+x, "*")
+		}
+	}
+}
+
+// demoRenderer cycles the scenes on a wall clock: each runs demoSceneMS
+// milliseconds, then the next, then back to the first. The renderer ignores
+// the frame counter push hands it and reads the real elapsed time, so the
+// scenes advance by seconds, not by frames.
+func demoRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) func(n int) []byte {
+	f, ok := cap.ServerFrame(wrapFrame)
+	if !ok {
+		return func(int) []byte { return nil }
+	}
+	m, err := diag.ParseMessage(f.Data, false)
+	if err != nil {
+		return func(int) []byte { return nil }
+	}
+	items := diag.ParseItems(m.Body)
+	atomIdx := -1
+	for i, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
+			atomIdx = i
+		}
+	}
+	if atomIdx < 0 {
+		return func(int) []byte { return nil }
+	}
+	h := m.Header
+	h.Compress = 0
+	base := items
+	scenes := demoScenes()
+	sceneDur := time.Duration(demoSceneMS) * time.Millisecond
+	if sceneDur <= 0 {
+		sceneDur = 3 * time.Second
+	}
+	var start time.Time
+	lastScene := -1
+	return func(n int) []byte {
+		if start.IsZero() {
+			start = time.Now()
+		}
+		total := sceneDur * time.Duration(len(scenes))
+		pos := time.Since(start) % total
+		idx := int(pos / sceneDur)
+		if idx >= len(scenes) {
+			idx = len(scenes) - 1
+		}
+		ts := (pos - time.Duration(idx)*sceneDur).Seconds()
+		if idx != lastScene {
+			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach)
+			lastScene = idx
+		}
+		scr := frame.New(27, 120)
+		scenes[idx].draw(ts, scr)
+		scr.Text(24, 1, fmt.Sprintf("scene %d/%d  %-9s  approach: %s", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach))
+		scr.Text(25, 1, "F3/Back or close the window to stop")
+		out := append([]diag.Item{}, base...)
+		out[atomIdx].Value = scr.Encode()
+		out = withSound(out, n)
+		msg, err := diag.EncodeMessage(h, out, false)
+		if err != nil {
+			return nil
+		}
+		return msg
 	}
 }
 
@@ -1043,6 +1217,8 @@ func renderer(mode string, cap *replay.Capture, screenFrame, pushFrame int, list
 		return colorlistRenderer(listWrap, log)
 	case "widgets":
 		return widgetsRenderer(cap, screenFrame, log)
+	case "demo":
+		return demoRenderer(cap, screenFrame, log)
 	}
 	return patchRenderer(cap, pushFrame, log)
 }
