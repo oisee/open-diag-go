@@ -303,8 +303,17 @@ func (s *screenState) changed() []diag.Atom {
 				a := s.atoms[f.idx]
 				a.State = s.states[f.idx]
 				a.Flags[1] |= 0x01 // changed by the user
-				if f.kind == fRadio && s.states[f.idx] == 'X' {
-					a.Flags[1] |= 0x80 // the selected radio
+				if f.kind == fRadio {
+					// Byte-3 0x80 marks the selected radio. Set it on the one
+					// now chosen and CLEAR it on a deselected one — the server
+					// preset it on the option it shipped selected, and that
+					// atom is copied here, so leaving 0x80 would send a
+					// deselected radio still flagged selected.
+					if s.states[f.idx] == 'X' {
+						a.Flags[1] |= 0x80
+					} else {
+						a.Flags[1] &^= 0x80
+					}
 				}
 				a.Rest = nil
 				out = append(out, a)

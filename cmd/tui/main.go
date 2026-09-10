@@ -180,7 +180,10 @@ func parseFKeys(spec string) map[int]string {
 			continue
 		}
 		code := strings.TrimSpace(pair[eq+1:])
-		if code != "" && !strings.HasPrefix(code, "=") && !strings.HasPrefix(code, "/") {
+		if code == "" {
+			continue // "N=" with no code: not a binding, leave F-N unbound
+		}
+		if !strings.HasPrefix(code, "=") && !strings.HasPrefix(code, "/") {
 			code = "=" + code
 		}
 		m[n] = code
@@ -454,6 +457,11 @@ func (s *session) handleFrame(payload []byte) (bool, error) {
 		// A handshake or status-only frame: repaint the status bar so a
 		// "saving…" or an error message still shows under the last chrome.
 		if s.drewOnce && msg != "" {
+			// A message-bearing frame with no new screen is the answer to our
+			// PAI (an error/info that keeps the current screen), so the round
+			// trip is over — clear pending, or the next Enter/key would be
+			// refused as "previous answer still pending" forever.
+			s.pending = false
 			s.msgType, s.msg = msgType, msg
 			if s.interactive && s.scr != nil {
 				s.redraw()
