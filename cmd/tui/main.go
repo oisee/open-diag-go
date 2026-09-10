@@ -1,19 +1,22 @@
-// tui is a read-only SAP GUI-protocol terminal. It connects to a dispatcher
-// over the classic NI/DIAG transport, sends one opening hello taken verbatim
-// from a local capture, and then only listens: for every screen the server
-// sends it decodes the DYNT_ATOM item and draws the screen on the terminal.
+// tui is a SAP GUI-protocol terminal: it draws the screens a dispatcher sends
+// the way SAP GUI lays them out — the window chrome (title bar, menu bar,
+// application toolbar, status bar) around a canvas of dynpro elements or a
+// classic list, in colour, with icons and framed group boxes. Two modes:
 //
-//	tui --addr host:port --hello captures/probe.jsonl          # keep drawing each screen
-//	tui --addr host:port --hello captures/probe.jsonl --once   # draw the first screen and quit
+//	# read-only: connect, send a captured hello, draw every screen the server
+//	# sends and nothing back but NI_PONG keepalives.
+//	tui --addr host:port --hello captures/probe.jsonl
 //
-// It is read-only in the strong sense: after the hello the only bytes it ever
-// writes are NI_PONG replies to the server's NI_PING keepalives. It never
-// sends a keystroke, a function code, an Enter/PAI, or any logon data, and it
-// has no input path at all. A wrong-password logon against a real user locks
-// the account, so v1 renders and quits and offers no way to type into SAP.
+//	# live logon: same, but answer the logon screen once with credentials from
+//	# a .mcp.json server, then keep drawing each screen the server sends.
+//	tui --addr host:32NN --hello captures/probe.jsonl --logon --mcp .mcp.json --server a4h
 //
-// The address is given at runtime and the hello comes from a local capture
-// the user points at; neither is baked in. Point this only at your own system.
+// It never sends a keystroke or a function code of its own, and it makes at
+// most one logon attempt per run: a second wrong password would count towards
+// locking the user, so a logon screen that comes back is drawn, not answered.
+// The password is read from the .mcp.json the user points at (or ODGP_PASSWORD
+// when --user is given on the command line) and is never logged or drawn.
+// Point this only at your own system.
 package main
 
 import (
@@ -40,11 +43,55 @@ func main() {
 	addr := flag.String("addr", "", "dispatcher to connect to, host:port (required)")
 	hello := flag.String("hello", "", "capture whose first C->S frame is sent as the opening hello (required)")
 	once := flag.Bool("once", false, "draw the first screen received, then quit")
+	plain := flag.Bool("plain", false, "draw without colour or chrome (the old bare grid)")
+	logon := flag.Bool("logon", false, "answer the logon screen once, then keep drawing the session")
+	mcpPath := flag.String("mcp", "", "a .mcp.json to read credentials from, for --logon")
+	server := flag.String("server", "", "which server in --mcp to use")
+	user := flag.String("user", "", "logon user (password from ODGP_PASSWORD); overrides --mcp")
+	client := flag.String("client", "", "logon client; with --user")
+	lang := flag.String("lang", "EN", "logon language; with --user")
+	compress := flag.Bool("compress", false, "LZH-compress the frames we send (default off: DIAG accepts plain)")
+	render := flag.String("render", "", "offline: read this tap capture and draw every S->C screen it holds, no connection")
+	demo := flag.Bool("demo", false, "offline: animate a self-contained demo through the styled TUI, no connection")
+	sceneMS := flag.Int("scene-ms", 4000, "milliseconds each demo scene runs (with --demo)")
 	flag.Parse()
 
-	if *addr == "" || *hello == "" {
-		fmt.Fprintln(os.Stderr, "tui: --addr host:port and --hello <capture.jsonl> are required")
+	// Offline demo: no socket, no SAP. Animate locally through the renderer.
+	if *demo {
+		if err := runDemo(*sceneMS, *plain); err != nil {
+			fmt.Fprintln(os.Stderr, "tui: demo:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Offline render: no socket, no SAP. Walk a capture's server frames and
+	// draw each screen, stepping on Enter. The way to eyeball the renderer.
+	if *render != "" {
+		if err := renderCapture(*render, *plain, *once); err != nil {
+			fmt.Fprintln(os.Stderr, "tui: render:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *hello == "" {
+		fmt.Fprintln(os.Stderr, "tui: --hello <capture.jsonl> is required")
 		os.Exit(2)
+	}
+	if *addr == "" {
+		fmt.Fprintln(os.Stderr, "tui: --addr host:port is required")
+		os.Exit(2)
+	}
+
+	var creds credentials
+	if *logon {
+		var err error
+		creds, err = resolveCreds(*mcpPath, *server, *user, *client, *lang)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "tui: logon:", err)
+			os.Exit(1)
+		}
 	}
 
 	helloBytes, err := helloFromCapture(*hello)
@@ -52,20 +99,63 @@ func main() {
 		fmt.Fprintln(os.Stderr, "tui: hello:", err)
 		os.Exit(1)
 	}
+	template, _ := logonTemplate(*hello) // the captured client logon PAI, for --logon
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	if err := run(ctx, *addr, helloBytes, *once); err != nil {
+	s := &session{
+		plain:    *plain,
+		once:     *once,
+		logon:    *logon,
+		creds:    creds,
+		template: template,
+		compress: *compress,
+	}
+	if err := s.run(ctx, *addr, helloBytes); err != nil {
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)
 	}
 }
 
+// resolveCreds gathers logon credentials: from a .mcp.json server when --mcp
+// is given, else from --user with the password in ODGP_PASSWORD.
+func resolveCreds(mcpPath, server, user, client, lang string) (credentials, error) {
+	if mcpPath != "" {
+		if server == "" {
+			return credentials{}, fmt.Errorf("--mcp needs --server")
+		}
+		c, _, err := fromMCP(mcpPath, server)
+		return c, err
+	}
+	if user == "" {
+		return credentials{}, fmt.Errorf("give --mcp/--server or --user")
+	}
+	pw := os.Getenv("ODGP_PASSWORD")
+	if pw == "" {
+		return credentials{}, fmt.Errorf("set ODGP_PASSWORD for --user %s", user)
+	}
+	return credentials{Client: client, User: user, Password: pw, Lang: lang}, nil
+}
+
+// session is one connection's state: the flags, the chrome carried between
+// screens, and whether the one logon attempt has been made.
+type session struct {
+	plain    bool
+	once     bool
+	logon    bool
+	compress bool
+	creds    credentials
+	template []byte
+	chrome   chrome
+	loggedOn bool
+	drewOnce bool
+}
+
 // run connects, sends the hello once, and loops rendering screens until the
 // connection closes, the context is cancelled, or (with once) the first
 // screen is drawn.
-func run(parent context.Context, addr string, helloBytes []byte, once bool) error {
+func (s *session) run(parent context.Context, addr string, helloBytes []byte) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
@@ -77,8 +167,6 @@ func run(parent context.Context, addr string, helloBytes []byte, once bool) erro
 	defer conn.Close()
 	go func() { <-ctx.Done(); conn.Close() }()
 
-	// The opening hello: the one and only unsolicited thing this program
-	// sends. Everything after this is a reply to the server.
 	frame, err := ni.EncodeFrame(helloBytes)
 	if err != nil {
 		return fmt.Errorf("encoding hello: %w", err)
@@ -86,11 +174,13 @@ func run(parent context.Context, addr string, helloBytes []byte, once bool) erro
 	if _, err := conn.Write(frame); err != nil {
 		return fmt.Errorf("sending hello: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "tui: connected to %s, hello sent (%d bytes); read-only, listening\n", addr, len(helloBytes))
+	mode := "read-only"
+	if s.logon {
+		mode = "live logon as " + s.creds.User
+	}
+	fmt.Fprintf(os.Stderr, "tui: connected to %s, hello sent (%d bytes); %s\n", addr, len(helloBytes), mode)
 
-	// q on standard input quits, the same as Ctrl-C. Nothing typed here ever
-	// reaches SAP; it only ends the local session.
-	if !once {
+	if !s.once {
 		go watchQuit(ctx, cancel)
 	}
 
@@ -121,135 +211,173 @@ func run(parent context.Context, addr string, helloBytes []byte, once bool) erro
 				}
 				continue
 			}
-			drawn, err := handleFrame(payload)
+			drawn, err := s.handleFrame(conn, payload)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "tui: frame skipped: %v\n", err)
 				continue
 			}
-			if drawn && once {
+			if drawn && s.once {
 				return nil
 			}
 		}
 	}
 }
 
-// handleFrame decodes one DIAG frame and, when it carries a screen, draws it.
-// It returns whether a screen was drawn.
-func handleFrame(payload []byte) (bool, error) {
+// handleFrame decodes one server frame, updates the chrome from it, answers it
+// when we are logging on, and draws whatever screen it carries. It returns
+// whether a screen was drawn.
+func (s *session) handleFrame(conn net.Conn, payload []byte) (bool, error) {
 	m, err := diag.ParseMessage(payload, false)
 	if err != nil {
 		return false, err
 	}
 	items := diag.ParseItems(m.Body)
+	msgType, msg := s.chrome.update(items)
 
-	var atomItem *diag.Item
-	program, screen := "", ""
-	for i := range items {
-		it := items[i]
-		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
-			atomItem = &items[i]
-		}
-		if it.Type == diag.ItemAPPL && it.ID == 0x06 {
-			switch it.SID {
-			case 0x0d:
-				program = trimField(it.Value)
-			case 0x0e:
-				screen = trimField(it.Value)
-			}
+	if s.logon {
+		if err := s.answerLogon(conn, items); err != nil {
+			fmt.Fprintf(os.Stderr, "tui: logon step: %v\n", err)
 		}
 	}
-	// A classic ABAP list arrives as positioned text runs, not as a DYNT_ATOM
-	// screen; the frame still carries a small DYNT_ATOM for the list viewer's
-	// dynpro shell, so the list runs take precedence when they are present.
-	if diag.HasListSegments(items) {
-		segs := diag.ParseListItems(items)
-		grid := tui.RenderList(segs, tui.DefaultRows, tui.DefaultCols)
-		draw(grid, listStatusLine(program, screen, len(items), len(segs)))
-		return true, nil
-	}
 
-	if atomItem == nil {
-		// A handshake or control frame with no screen; nothing to draw.
+	canvas, note, ok := s.chrome.frameCanvas(items)
+	if !ok {
+		// A handshake or status-only frame: repaint the status bar so a
+		// "saving…" or an error message still shows under the last chrome.
+		if s.drewOnce && msg != "" {
+			s.drawStatusOnly(msgType, msg)
+		}
 		return false, nil
 	}
-
-	atoms, aerr := diag.ParseDyntAtoms(atomItem.Value)
-	// aerr means the tail of the chain was unreadable; the atoms before it
-	// still draw, so a partial screen is shown rather than nothing.
-
-	rows, cols := screenSize(items)
-	grid := tui.Render(atoms, rows, cols)
-
-	status := statusLine(program, screen, len(items), len(atoms), aerr)
-	draw(grid, status)
+	s.draw(canvas, msgType, msg, note)
+	s.drewOnce = true
 	return true, nil
 }
 
-// screenSize is the dynpro size if a DYNN or VARINFO item makes it plain, and
-// the classic 24x80 otherwise. The size fields inside those items are not
-// confirmed on the captures, so this keeps the default and lets Render grow
-// the grid to whatever the atoms actually need; no atom is lost either way.
-func screenSize(items []diag.Item) (rows, cols int) {
-	return tui.DefaultRows, tui.DefaultCols
+// answerLogon answers the logon screen exactly once, shaping the PAI from the
+// captured template and this frame's session id and counter.
+func (s *session) answerLogon(conn net.Conn, items []diag.Item) error {
+	if s.loggedOn || !isLogonScreen(items) {
+		return nil
+	}
+	if s.template == nil {
+		return fmt.Errorf("no captured logon PAI to shape the answer from")
+	}
+	out, err := buildLogonPAI(s.template, items, s.creds, counterOf(items)+1, s.compress)
+	if err != nil {
+		return err
+	}
+	if err := writeFrame(conn, out); err != nil {
+		return err
+	}
+	s.loggedOn = true
+	fmt.Fprintln(os.Stderr, "tui: logon sent")
+	return nil
 }
 
-// draw clears the terminal and paints the grid, clipped to the terminal size
-// so a screen larger than the window loses its overflow rather than wrapping,
-// with the status line last.
-func draw(g *tui.Grid, status string) {
+// draw renders the frame. With chrome it composes the GUI window round the
+// canvas and prints it in colour; plain, it prints the bare grid.
+func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
 	rows, cols := terminalSize()
-	if rows > 1 {
-		// Leave one line for the status.
-		g = g.Clip(rows-1, cols)
-	} else if cols > 0 {
-		g = g.Clip(0, cols)
+	if s.plain {
+		if rows > 1 {
+			canvas = canvas.Clip(rows-1, cols)
+		}
+		printClear(canvas.String() + "\n\x1b[7m " + s.bareStatus(note) + " \x1b[0m")
+		return
 	}
+	g := s.chrome.compose(canvas, msgType, msg, note+"  q quits", rows, cols)
+	printClear(g.ANSI())
+}
+
+// drawStatusOnly repaints only the status bar under the current chrome, for a
+// frame that carried a message but no new screen.
+func (s *session) drawStatusOnly(msgType byte, msg string) {
+	if s.plain {
+		return
+	}
+	rows, cols := terminalSize()
+	g := s.chrome.compose(tui.NewGrid(1, cols), msgType, msg, "q quits", rows, cols)
+	printClear(g.ANSI())
+}
+
+func (s *session) bareStatus(note string) string {
+	parts := []string{}
+	if s.chrome.program != "" {
+		parts = append(parts, "prog "+s.chrome.program)
+	}
+	parts = append(parts, note, "read-only  q quits")
+	return strings.Join(parts, "  |  ")
+}
+
+// firstPaint tracks whether the screen has been cleared once this run.
+var firstPaint = true
+
+// printClear paints one frame without flicker or vertical jitter. It homes the
+// cursor (a full \x1b[2J every frame flickers, and a trailing newline scrolls
+// the viewport whenever a frame's height changes — that is the up/down jitter),
+// clears each line to its end so a shorter line leaves no ghost, and clears
+// everything below the last line so a shorter frame leaves no tail. No trailing
+// newline is written, so the viewport never scrolls. The screen is fully
+// cleared only once, on the first frame.
+func printClear(s string) {
 	var b strings.Builder
-	b.WriteString("\x1b[2J\x1b[H") // clear screen, cursor home
-	b.WriteString(g.String())
-	b.WriteString("\n")
-	b.WriteString("\x1b[7m") // reverse video for the status line
-	b.WriteString(status)
-	b.WriteString("\x1b[0m\n")
+	if firstPaint {
+		b.WriteString("\x1b[2J")
+		firstPaint = false
+	}
+	b.WriteString("\x1b[H")
+	for i, ln := range strings.Split(s, "\n") {
+		if i > 0 {
+			b.WriteString("\r\n")
+		}
+		b.WriteString(ln)
+		b.WriteString("\x1b[K") // clear to end of line
+	}
+	b.WriteString("\x1b[J") // clear everything below the last line
 	fmt.Print(b.String())
 }
 
-// statusLine names the program and screen if the frame carried them, the item
-// and atom counts, and a note when the atom chain did not fully parse.
-func statusLine(program, screen string, items, atoms int, aerr error) string {
-	var parts []string
-	if program != "" {
-		parts = append(parts, "prog "+program)
+// writeFrame NI-frames and sends one DIAG payload.
+func writeFrame(conn net.Conn, payload []byte) error {
+	fr, err := ni.EncodeFrame(payload)
+	if err != nil {
+		return err
 	}
-	if screen != "" {
-		parts = append(parts, "dynpro "+screen)
-	}
-	parts = append(parts, fmt.Sprintf("%d items", items), fmt.Sprintf("%d atoms", atoms))
-	if aerr != nil {
-		parts = append(parts, "partial")
-	}
-	parts = append(parts, "read-only  q quits")
-	return " " + strings.Join(parts, "  |  ") + " "
-}
-
-// listStatusLine names the program and screen a list frame carried, its item
-// count and the number of text runs drawn.
-func listStatusLine(program, screen string, items, segs int) string {
-	var parts []string
-	if program != "" {
-		parts = append(parts, "prog "+program)
-	}
-	if screen != "" {
-		parts = append(parts, "dynpro "+screen)
-	}
-	parts = append(parts, fmt.Sprintf("%d items", items), fmt.Sprintf("%d list runs", segs))
-	parts = append(parts, "read-only  q quits")
-	return " " + strings.Join(parts, "  |  ") + " "
+	_, err = conn.Write(fr)
+	return err
 }
 
 // helloFromCapture reads the first C->S frame of a tap capture and returns its
 // bytes, to be sent verbatim as the opening hello.
 func helloFromCapture(path string) ([]byte, error) {
+	frames, err := clientFrames(path, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("%s: no C->S frame to use as a hello", path)
+	}
+	return frames[0], nil
+}
+
+// logonTemplate returns the capture's second client frame — the logon PAI a
+// real GUI sent (SES echo, ST_USER.26 counter, the changed field atoms, the
+// metrics XML) — as the shape our own logon answer is built from.
+func logonTemplate(path string) ([]byte, error) {
+	frames, err := clientFrames(path, 2)
+	if err != nil {
+		return nil, err
+	}
+	if len(frames) < 2 {
+		return nil, fmt.Errorf("%s: no second C->S frame for a logon template", path)
+	}
+	return frames[1], nil
+}
+
+// clientFrames reads up to n C->S frames (NI keepalives skipped) from a tap
+// capture, decoding the hex of each.
+func clientFrames(path string, n int) ([][]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -257,48 +385,47 @@ func helloFromCapture(path string) ([]byte, error) {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	for sc.Scan() {
+	var out [][]byte
+	for sc.Scan() && len(out) < n {
 		var l struct {
 			Dir string `json:"dir"`
 			Hex string `json:"hex"`
 		}
-		if json.Unmarshal(sc.Bytes(), &l) != nil {
-			continue
-		}
-		if l.Dir != "C->S" {
+		if json.Unmarshal(sc.Bytes(), &l) != nil || l.Dir != "C->S" {
 			continue
 		}
 		data, err := hex.DecodeString(l.Hex)
 		if err != nil {
-			return nil, fmt.Errorf("decoding hello hex: %w", err)
+			return nil, fmt.Errorf("decoding hex: %w", err)
 		}
 		if len(data) == 0 {
 			continue
 		}
-		return data, nil
+		if _, ok := diag.NIControl(data); ok {
+			continue
+		}
+		out = append(out, data)
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("%s: no C->S frame to use as a hello", path)
+	return out, nil
 }
 
-// mustPong is the NI_PONG keepalive answer: the one reply this program sends
-// after the hello.
+// mustPong is the NI_PONG keepalive answer.
 func mustPong() []byte {
 	frame, err := ni.EncodeFrame([]byte("NI_PONG\x00"))
 	if err != nil {
-		// EncodeFrame only fails on an oversized payload; this one is eight
-		// bytes, so this cannot happen.
 		panic(err)
 	}
 	return frame
 }
 
-// watchQuit ends the session when q is typed on standard input. It never
-// sends anything to SAP; the byte read here only cancels the local context.
+// watchQuit ends the session when q is typed on standard input. It never sends
+// anything to SAP; the byte read here only cancels the local context. On end
+// of input (stdin is not a terminal, e.g. the demo piped) it stops watching but
+// does NOT cancel, so a non-interactive run keeps going until Ctrl-C.
 func watchQuit(ctx context.Context, cancel context.CancelFunc) {
-	defer cancel()
 	r := bufio.NewReader(os.Stdin)
 	for {
 		if ctx.Err() != nil {
@@ -306,17 +433,17 @@ func watchQuit(ctx context.Context, cancel context.CancelFunc) {
 		}
 		b, err := r.ReadByte()
 		if err != nil {
-			return
+			return // end of input: stop watching, leave the session running
 		}
 		if b == 'q' || b == 'Q' {
+			cancel()
 			return
 		}
 	}
 }
 
-// terminalSize asks the controlling terminal for its size in character cells.
-// It returns zeros when standard output is not a terminal, in which case the
-// caller does not clip.
+// terminalSize asks the controlling terminal for its size in character cells,
+// returning zeros when standard output is not a terminal.
 func terminalSize() (rows, cols int) {
 	type winsize struct{ Row, Col, X, Y uint16 }
 	ws := &winsize{}
@@ -330,9 +457,4 @@ func terminalSize() (rows, cols int) {
 		return 0, 0
 	}
 	return int(ws.Row), int(ws.Col)
-}
-
-// trimField reads a NUL/space-padded field value as a string.
-func trimField(b []byte) string {
-	return strings.Trim(string(b), " \x00")
 }

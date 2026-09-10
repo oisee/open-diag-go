@@ -108,8 +108,8 @@ func TestRenderListPlacement(t *testing.T) {
 	if got := at(g, 4, 0, 3); got != "idx" {
 		t.Errorf("header = %q, want %q", got, "idx")
 	}
-	if got := at(g, 5, 0, 4); got != "----" {
-		t.Errorf("ruled line = %q, want %q", got, "----")
+	if got := at(g, 5, 0, 4); got != "────" {
+		t.Errorf("ruled line = %q, want %q", got, "────")
 	}
 	if got := at(g, 6, 0, 3); got != "  1" {
 		t.Errorf("key column = %q, want %q", got, "  1")
@@ -190,4 +190,121 @@ func containsAny(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// A frame draws as an outlined box of its width and height with the title
+// on the top edge, and a field placed inside it overprints the interior.
+func TestRenderFrameBox(t *testing.T) {
+	atoms := []diag.Atom{
+		diag.Label(2, 3, "in"),
+		{EType: diag.AtomFrame, Row: 1, Col: 1, Length: 10, Height: 4, Text: "Box"},
+	}
+	g := Render(atoms, 6, 12)
+	if g.At(1, 1) != '┌' || g.At(1, 10) != '┐' || g.At(4, 1) != '└' || g.At(4, 10) != '┘' {
+		t.Errorf("corners wrong:\n%s", g.String())
+	}
+	if got := at(g, 1, 3, 5); got != " Box " {
+		t.Errorf("title on top edge = %q", got)
+	}
+	if got := at(g, 2, 3, 2); got != "in" {
+		t.Errorf("label inside the box = %q", got)
+	}
+	if g.At(2, 1) != '│' {
+		t.Errorf("left edge = %q, want │", g.At(2, 1))
+	}
+}
+
+// A sized pushbutton fills its width and height with the button face, the
+// caption centred — so an equalizer bar made of an empty tall button shows
+// as a solid block, not a bracketed nothing.
+func TestRenderButtonFace(t *testing.T) {
+	atoms := []diag.Atom{
+		{EType: diag.AtomPushbutton, Row: 0, Col: 2, Length: 4, Height: 3, Text: ""},
+		{EType: diag.AtomPushbutton, Row: 4, Col: 0, Length: 8, Height: 1, Text: "OK"},
+	}
+	g := Render(atoms, 6, 12)
+	for r := 0; r < 3; r++ {
+		for c := 2; c < 6; c++ {
+			if cell := g.CellAt(r, c); cell.Style != StyleButton {
+				t.Fatalf("cell (%d,%d) not a button face: %+v", r, c, cell)
+			}
+		}
+	}
+	if cell := g.CellAt(0, 6); cell.Style == StyleButton {
+		t.Error("button face spills past its width")
+	}
+	if got := strings.TrimSpace(at(g, 4, 0, 8)); got != "OK" {
+		t.Errorf("caption = %q, want OK", got)
+	}
+	if g.CellAt(4, 3).Ch != 'O' {
+		t.Errorf("caption not centred: %q", at(g, 4, 0, 8))
+	}
+}
+
+// List runs carry their SAP colour as the cell style, icons become a glyph
+// and a space with the rest of the run shifted two cells left, and a ruled
+// run is a line.
+func TestRenderListColourAndIcons(t *testing.T) {
+	segs := []diag.ListSegment{
+		diag.ListText(0, 0, diag.ColNegative, "bad"),
+		diag.ListText(1, 0, diag.ColOff, "@0A@ red"),
+		{Row: 2, Col: 0, Length: 3, Attr: [3]byte{0x08, 0, 0}, Text: "---"},
+	}
+	g := RenderList(segs, 3, 10)
+	if st := g.CellAt(0, 0).Style; st != ListStyle(diag.ColNegative) || st.Bg == 0 {
+		t.Errorf("negative colour not applied: %+v", st)
+	}
+	if got := at(g, 1, 0, 6); got != "●  red" {
+		t.Errorf("icon run = %q, want %q", got, "●  red")
+	}
+	if g.CellAt(1, 0).Style.Fg != 196 {
+		t.Errorf("red light glyph colour = %d", g.CellAt(1, 0).Style.Fg)
+	}
+	if got := at(g, 2, 0, 3); got != "───" {
+		t.Errorf("ruled run = %q", got)
+	}
+}
+
+// A password field shows one asterisk per character over its underscores.
+func TestRenderPasswordMask(t *testing.T) {
+	atoms := []diag.Atom{
+		{EType: diag.AtomInputField, Row: 0, Col: 0, Attr: diag.AttrYes3D | diag.AttrInvisible, VisibleLength: 8, Text: "abc"},
+	}
+	g := Render(atoms, 1, 10)
+	if got := at(g, 0, 0, 8); got != "***_____" {
+		t.Errorf("password field = %q", got)
+	}
+}
+
+// Compose puts title, menus and toolbar above the canvas and the status bar
+// below, and the canvas lands at row 3 unchanged.
+func TestCompose(t *testing.T) {
+	canvas := Render([]diag.Atom{diag.Label(0, 0, "Client")}, 2, 20)
+	v := View{Title: "SAP R/3 (1) A4H", Menus: []string{"User", "System", "Help"},
+		Toolbar: []string{"New password"}, Canvas: canvas, MsgType: 'E', Message: "Name or password is incorrect", Info: "A4H (1) 001"}
+	g := Compose(v, 0, 60)
+	if g.Rows != 2+ChromeRows || g.Cols != 60 {
+		t.Fatalf("composed size %dx%d", g.Rows, g.Cols)
+	}
+	if got := at(g, 0, 1, 15); got != "SAP R/3 (1) A4H" {
+		t.Errorf("title = %q", got)
+	}
+	if got := at(g, 1, 1, 18); got != "User  System  Help" {
+		t.Errorf("menu bar = %q", got)
+	}
+	if got := at(g, 2, 1, 14); got != " New password " {
+		t.Errorf("toolbar = %q", got)
+	}
+	if got := at(g, 3, 0, 6); got != "Client" {
+		t.Errorf("canvas row 0 = %q", got)
+	}
+	if got := at(g, 5, 1, 31); got != "✖ Name or password is incorrect" {
+		t.Errorf("status message = %q", got)
+	}
+	if got := at(g, 5, 60-12, 11); got != "A4H (1) 001" {
+		t.Errorf("status info = %q", got)
+	}
+	if !strings.Contains(g.ANSILine(0, 60), "48;5;24") {
+		t.Error("title bar ANSI lacks its background")
+	}
 }

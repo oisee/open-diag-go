@@ -1,10 +1,12 @@
-// Package tui renders a DIAG screen onto a plain character grid, the way a
-// terminal shows it. A dynpro screen is a chain of diag.Atom read from a
-// DYNT_ATOM item (Render); a classic ABAP list is a stream of positioned text
-// runs read from the SBA/SFE/SLC/VARINFO.0b items (RenderList). It is
-// read-only: it turns items into text and never encodes anything back. The
-// network side lives in cmd/tui; the drawing lives here so it can be tested
-// against synthetic atoms and segments with no capture and no connection.
+// Package tui renders a DIAG screen onto a character grid with styles, the
+// way SAP GUI lays it out cell for cell. A dynpro screen is a chain of
+// diag.Atom read from a DYNT_ATOM item (Render); a classic ABAP list is a
+// stream of positioned coloured text runs read from the SBA/SFE/SLC/VARINFO.0b
+// items (RenderList). Compose puts the GUI chrome round a canvas: title bar,
+// menu bar, toolbar, status bar. It is read-only: it turns items into cells
+// and never encodes anything back. The network side lives in cmd/tui; the
+// drawing lives here so it can be tested against synthetic atoms and segments
+// with no capture and no connection.
 package tui
 
 import (
@@ -20,51 +22,122 @@ const (
 	DefaultCols = 80
 )
 
-// Grid is a rectangle of character cells, addressed by 0-based row and
-// column, the atoms already placed on it.
+// Grid is a rectangle of styled character cells, addressed by 0-based row
+// and column, the atoms already placed on it.
 type Grid struct {
 	Rows, Cols int
-	cells      [][]rune
+	cells      [][]Cell
 }
 
-// newGrid is a rows-by-cols grid filled with blanks.
-func newGrid(rows, cols int) *Grid {
+// newGrid is a rows-by-cols grid filled with blanks in the given style.
+func newGrid(rows, cols int, fill Style) *Grid {
 	if rows < 1 {
 		rows = 1
 	}
 	if cols < 1 {
 		cols = 1
 	}
-	cells := make([][]rune, rows)
+	cells := make([][]Cell, rows)
 	for i := range cells {
-		row := make([]rune, cols)
+		row := make([]Cell, cols)
 		for j := range row {
-			row[j] = ' '
+			row[j] = Cell{' ', fill}
 		}
 		cells[i] = row
 	}
 	return &Grid{Rows: rows, Cols: cols, cells: cells}
 }
 
-// put writes s starting at row, col, dropping any part that falls off the
-// grid. Placement is clipping only; it never grows the grid.
-func (g *Grid) put(row, col int, s string) {
-	if row < 0 || row >= g.Rows {
+// NewGrid is a blank grid of the given size in the plain style.
+func NewGrid(rows, cols int) *Grid { return newGrid(rows, cols, Style{}) }
+
+// set writes one cell, dropping it when it falls off the grid. Placement is
+// clipping only; it never grows the grid.
+func (g *Grid) set(row, col int, c Cell) {
+	if row < 0 || row >= g.Rows || col < 0 || col >= g.Cols {
 		return
 	}
+	g.cells[row][col] = c
+}
+
+// put writes s starting at row, col in one style.
+func (g *Grid) put(row, col int, s string, st Style) {
 	for i, r := range []rune(s) {
-		c := col + i
-		if c < 0 || c >= g.Cols {
-			continue
-		}
-		g.cells[row][c] = r
+		g.set(row, col+i, Cell{r, st})
 	}
+}
+
+// putCells writes a run of cells starting at row, col.
+func (g *Grid) putCells(row, col int, cs []Cell) {
+	for i, c := range cs {
+		g.set(row, col+i, c)
+	}
+}
+
+// fill paints a width-by-height block with one character and style.
+func (g *Grid) fill(row, col, width, height int, ch rune, st Style) {
+	for r := row; r < row+height; r++ {
+		for c := col; c < col+width; c++ {
+			g.set(r, c, Cell{ch, st})
+		}
+	}
+}
+
+// box draws the outline of a width-by-height frame with box-drawing lines
+// and its title inset on the top edge, as the GUI draws a group box.
+func (g *Grid) box(row, col, width, height int, title string, st Style) {
+	if width < 2 || height < 2 {
+		// Too small for an outline: the title alone marks it.
+		g.put(row, col, title, st)
+		return
+	}
+	g.set(row, col, Cell{'┌', st})
+	g.set(row, col+width-1, Cell{'┐', st})
+	g.set(row+height-1, col, Cell{'└', st})
+	g.set(row+height-1, col+width-1, Cell{'┘', st})
+	for c := col + 1; c < col+width-1; c++ {
+		g.set(row, c, Cell{'─', st})
+		g.set(row+height-1, c, Cell{'─', st})
+	}
+	for r := row + 1; r < row+height-1; r++ {
+		g.set(r, col, Cell{'│', st})
+		g.set(r, col+width-1, Cell{'│', st})
+	}
+	if t := []rune(strings.TrimSpace(title)); len(t) > 0 {
+		if len(t) > width-4 && width-4 > 0 {
+			t = t[:width-4]
+		}
+		g.put(row, col+2, " "+string(t)+" ", Style{Fg: 16})
+	}
+}
+
+// extent is the rows and columns an atom occupies, so the grid can grow to
+// hold it: a frame or button its width and height, anything else its text.
+func extent(a diag.Atom) (rows, cols int) {
+	switch a.EType {
+	case diag.AtomFrame, diag.AtomPushbutton:
+		if a.Length > 0 {
+			h := a.Height
+			if h < 1 {
+				h = 1
+			}
+			return a.Row + h, a.Col + a.Length
+		}
+	}
+	s := atomText(a)
+	if s == "" {
+		return 0, 0
+	}
+	return a.Row + 1, a.Col + len([]rune(s))
 }
 
 // Render places every drawable atom onto a grid at least minRows by minCols.
 // The grid is grown, never shrunk, so that no atom is clipped off the bottom
 // or the right; a caller with a smaller terminal clips at draw time with
 // Clip. A minRows or minCols below one falls back to the default dynpro size.
+// Frames are drawn first and buttons second, so the fields inside a group
+// box and the caption on a button overprint their outline and face, the way
+// the GUI layers them.
 func Render(atoms []diag.Atom, minRows, minCols int) *Grid {
 	rows, cols := minRows, minCols
 	if rows < 1 {
@@ -74,35 +147,99 @@ func Render(atoms []diag.Atom, minRows, minCols int) *Grid {
 		cols = DefaultCols
 	}
 	for _, a := range atoms {
-		s := atomText(a)
-		if s == "" {
-			continue
+		r, c := extent(a)
+		if r > rows {
+			rows = r
 		}
-		if a.Row+1 > rows {
-			rows = a.Row + 1
-		}
-		if end := a.Col + len([]rune(s)); end > cols {
-			cols = end
+		if c > cols {
+			cols = c
 		}
 	}
-	g := newGrid(rows, cols)
+	g := newGrid(rows, cols, Style{})
 	for _, a := range atoms {
-		s := atomText(a)
-		if s == "" {
-			continue
+		if a.EType == diag.AtomFrame {
+			g.drawAtom(a)
 		}
-		g.put(a.Row, a.Col, s)
+	}
+	for _, a := range atoms {
+		if a.EType == diag.AtomPushbutton {
+			g.drawAtom(a)
+		}
+	}
+	for _, a := range atoms {
+		if a.EType != diag.AtomFrame && a.EType != diag.AtomPushbutton {
+			g.drawAtom(a)
+		}
 	}
 	return g
 }
 
+// drawAtom paints one atom: the frame as an outlined box, the button as a
+// filled face of its width and height with the caption centred, the rest as
+// their text in the style of their kind.
+func (g *Grid) drawAtom(a diag.Atom) {
+	switch a.EType {
+	case diag.AtomFrame:
+		if a.Attr&diag.AttrInvisible != 0 {
+			return
+		}
+		if a.Length > 0 && a.Height > 0 {
+			g.box(a.Row, a.Col, a.Length, a.Height, a.Value(), StyleFrame)
+		} else {
+			g.put(a.Row, a.Col, a.Value(), Style{Fg: 16})
+		}
+	case diag.AtomPushbutton:
+		if a.Attr&diag.AttrInvisible != 0 {
+			return
+		}
+		if a.Length <= 0 {
+			g.put(a.Row, a.Col, "["+a.Value()+"]", StyleButton)
+			return
+		}
+		h := a.Height
+		if h < 1 {
+			h = 1
+		}
+		g.fill(a.Row, a.Col, a.Length, h, ' ', StyleButton)
+		cap := expandIcons(a.Value(), StyleButton)
+		if len(cap) > a.Length {
+			cap = cap[:a.Length]
+		}
+		g.putCells(a.Row+(h-1)/2, a.Col+(a.Length-len(cap))/2, cap)
+	case diag.AtomInputField:
+		if a.Attr&diag.AttrInvisible != 0 && a.Attr&diag.AttrProtected != 0 {
+			return
+		}
+		if a.Attr&diag.AttrProtected != 0 {
+			g.put(a.Row, a.Col, a.Value(), StyleProt)
+			return
+		}
+		g.put(a.Row, a.Col, inputText(a), StyleInput)
+		if a.Attr&diag.AttrMatchcode != 0 {
+			g.put(a.Row, a.Col+inputWidth(a), "▾", Style{Fg: 240})
+		}
+	default:
+		s := atomText(a)
+		if s == "" {
+			return
+		}
+		st := StyleLabel
+		if a.EType == diag.AtomOutputField {
+			st = StyleProt
+		}
+		if a.Attr&diag.AttrIntensify != 0 {
+			st.Bold = true
+		}
+		g.putCells(a.Row, a.Col, expandIcons(s, st))
+	}
+}
+
 // RenderList places the text runs of a classic ABAP list onto a grid at least
 // minRows by minCols. Each segment is drawn at its own row and column, the way
-// the list stream positioned it; the grid grows so no run is clipped off the
-// bottom or the right. Runs are drawn in arrival order, so where the list
-// overprints a cell the later run wins, as it does in the GUI. Colour lives on
-// the segment for a colour-aware front end; this plain character grid shows the
-// text only.
+// the list stream positioned it, in the SAP list colour it carried; a ruled
+// run is a horizontal line. The grid grows so no run is clipped off the bottom
+// or the right. Runs are drawn in arrival order, so where the list overprints
+// a cell the later run wins, as it does in the GUI.
 func RenderList(segs []diag.ListSegment, minRows, minCols int) *Grid {
 	rows, cols := minRows, minCols
 	if rows < 1 {
@@ -122,22 +259,27 @@ func RenderList(segs []diag.ListSegment, minRows, minCols int) *Grid {
 			cols = end
 		}
 	}
-	g := newGrid(rows, cols)
+	g := newGrid(rows, cols, Style{})
 	for _, s := range segs {
 		if s.Text == "" {
 			continue
 		}
-		g.put(s.Row, s.Col, s.Text)
+		st := ListStyle(s.Color)
+		if s.Ruled() {
+			g.put(s.Row, s.Col, strings.Repeat("─", len([]rune(s.Text))), st)
+			continue
+		}
+		g.putCells(s.Row, s.Col, expandIcons(s.Text, st))
 	}
 	return g
 }
 
-// atomText is how one atom shows on the grid. Labels, output fields and the
-// title of a frame are their trimmed value. An input field shows its value
-// over a run of underscores that mark how wide the field is. A checkbox or
-// radio button shows its state in a box before its label, a pushbutton its
-// caption in brackets. Field-name and XML-property atoms carry no visible
-// text and draw nothing.
+// atomText is how one atom shows on the grid as plain text. Labels, output
+// fields and the title of a frame are their trimmed value. An input field
+// shows its value over a run of underscores that mark how wide the field is;
+// a password field shows asterisks. A checkbox or radio button shows its
+// state in a box before its label, a pushbutton its caption in brackets.
+// Field-name and XML-property atoms carry no visible text and draw nothing.
 func atomText(a diag.Atom) string {
 	switch a.EType {
 	case diag.AtomLabel, diag.AtomOutputField, diag.AtomFrame:
@@ -146,13 +288,13 @@ func atomText(a diag.Atom) string {
 		}
 		return a.Value()
 	case diag.AtomInputField:
-		// The attribute bits change how a field looks: an invisible field
-		// draws nothing, a protected one shows its value without the
-		// editable underscores, and a value-help field gets an F4 marker.
-		if a.Attr&diag.AttrInvisible != 0 {
-			return ""
-		}
+		// The attribute bits change how a field looks: a protected one
+		// shows its value without the editable underscores, an invisible
+		// one masks its value, and a value-help field gets an F4 marker.
 		if a.Attr&diag.AttrProtected != 0 {
+			if a.Attr&diag.AttrInvisible != 0 {
+				return ""
+			}
 			return a.Value()
 		}
 		t := inputText(a)
@@ -171,9 +313,8 @@ func atomText(a diag.Atom) string {
 	}
 }
 
-// inputText draws an input field as its value left-justified over underscores
-// that show the field's on-screen width, so an empty field is still visible.
-func inputText(a diag.Atom) string {
+// inputWidth is the on-screen width of an input field.
+func inputWidth(a diag.Atom) int {
 	w := a.VisibleLength
 	if w <= 0 {
 		w = a.MaxChars
@@ -181,15 +322,29 @@ func inputText(a diag.Atom) string {
 	if w <= 0 {
 		w = a.Length
 	}
-	v := []rune(a.Value())
 	if w <= 0 {
-		w = len(v)
+		w = len([]rune(a.Value()))
 	}
+	return w
+}
+
+// inputText draws an input field as its value left-justified over underscores
+// that show the field's on-screen width, so an empty field is still visible.
+// An invisible (password) field shows one asterisk per character instead.
+func inputText(a diag.Atom) string {
+	w := inputWidth(a)
+	v := []rune(a.Value())
 	if len(v) > w {
 		v = v[:w]
 	}
 	out := make([]rune, 0, w)
-	out = append(out, v...)
+	if a.Attr&diag.AttrInvisible != 0 {
+		for range v {
+			out = append(out, '*')
+		}
+	} else {
+		out = append(out, v...)
+	}
 	for len(out) < w {
 		out = append(out, '_')
 	}
@@ -217,13 +372,22 @@ func (g *Grid) Line(row int) string {
 	if row < 0 || row >= g.Rows {
 		return ""
 	}
-	return string(g.cells[row])
+	var b strings.Builder
+	for _, c := range g.cells[row] {
+		b.WriteRune(c.Ch)
+	}
+	return b.String()
 }
 
 // At is the rune at row, col, or a blank when out of range.
 func (g *Grid) At(row, col int) rune {
+	return g.CellAt(row, col).Ch
+}
+
+// CellAt is the cell at row, col, or a blank plain cell when out of range.
+func (g *Grid) CellAt(row, col int) Cell {
 	if row < 0 || row >= g.Rows || col < 0 || col >= g.Cols {
-		return ' '
+		return Cell{' ', Style{}}
 	}
 	return g.cells[row][col]
 }
@@ -239,7 +403,7 @@ func (g *Grid) Clip(maxRows, maxCols int) *Grid {
 	if maxCols > 0 && maxCols < cols {
 		cols = maxCols
 	}
-	out := newGrid(rows, cols)
+	out := newGrid(rows, cols, Style{})
 	for r := 0; r < rows; r++ {
 		copy(out.cells[r], g.cells[r][:cols])
 	}
@@ -247,14 +411,14 @@ func (g *Grid) Clip(maxRows, maxCols int) *Grid {
 }
 
 // String is the whole grid, one row per line, each row's trailing blanks
-// trimmed. It is what a plain terminal prints.
+// trimmed. It is what a plain terminal prints; styles are dropped.
 func (g *Grid) String() string {
 	var b strings.Builder
-	for i, row := range g.cells {
+	for i := 0; i < g.Rows; i++ {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(strings.TrimRight(string(row), " "))
+		b.WriteString(strings.TrimRight(g.Line(i), " "))
 	}
 	return b.String()
 }
