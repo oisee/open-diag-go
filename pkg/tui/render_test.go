@@ -100,7 +100,7 @@ func TestRenderGrowsToFitAtom(t *testing.T) {
 func TestRenderListPlacement(t *testing.T) {
 	segs := []diag.ListSegment{
 		{Row: 4, Col: 0, Color: diag.ColHeading, Text: "idx"},
-		{Row: 5, Col: 0, Attr: [3]byte{0x08, 0x00, 0x08}, Text: "----"},
+		{Row: 5, Col: 0, Attr: [3]byte{0x08, 0x00, 0x08}, Text: "4444"}, // SAP box code '4' = ─
 		{Row: 6, Col: 0, Color: diag.ColKey, Text: "  1"},
 		{Row: 6, Col: 29, Color: diag.ColOff, Text: "1"},
 	}
@@ -242,15 +242,17 @@ func TestRenderButtonFace(t *testing.T) {
 }
 
 // List runs carry their SAP colour as the cell style, icons become a glyph
-// and a space with the rest of the run shifted two cells left, and a ruled
-// run is a line.
+// and a space with the rest of the run shifted two cells left, a box-drawing
+// run (SFE byte 2 = 0x08) maps its SAP codes to box glyphs, and a text run is
+// text even when SFE byte 0 is 0x08.
 func TestRenderListColourAndIcons(t *testing.T) {
 	segs := []diag.ListSegment{
 		diag.ListText(0, 0, diag.ColNegative, "bad"),
 		diag.ListText(1, 0, diag.ColOff, "@0A@ red"),
-		{Row: 2, Col: 0, Length: 3, Attr: [3]byte{0x08, 0, 0}, Text: "---"},
+		{Row: 2, Col: 0, Length: 3, Attr: [3]byte{0x08, 0, 0x08}, Text: "454"}, // box: ─│─
+		{Row: 3, Col: 0, Length: 3, Attr: [3]byte{0x08, 0, 0x00}, Text: "001"}, // text, not ruled
 	}
-	g := RenderList(segs, 3, 10)
+	g := RenderList(segs, 4, 10)
 	if st := g.CellAt(0, 0).Style; st != ListStyle(diag.ColNegative) || st.Bg == 0 {
 		t.Errorf("negative colour not applied: %+v", st)
 	}
@@ -260,8 +262,11 @@ func TestRenderListColourAndIcons(t *testing.T) {
 	if g.CellAt(1, 0).Style.Fg != 196 {
 		t.Errorf("red light glyph colour = %d", g.CellAt(1, 0).Style.Fg)
 	}
-	if got := at(g, 2, 0, 3); got != "───" {
-		t.Errorf("ruled run = %q", got)
+	if got := at(g, 2, 0, 3); got != "─│─" {
+		t.Errorf("box run = %q, want %q", got, "─│─")
+	}
+	if got := at(g, 3, 0, 3); got != "001" {
+		t.Errorf("text run with SFE byte0=0x08 = %q, want 001 (not a ruled line)", got)
 	}
 }
 

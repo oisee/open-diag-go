@@ -265,8 +265,13 @@ func RenderList(segs []diag.ListSegment, minRows, minCols int) *Grid {
 			continue
 		}
 		st := ListStyle(s.Color)
-		if s.Ruled() {
-			g.put(s.Row, s.Col, strings.Repeat("─", len([]rune(s.Text))), st)
+		if s.Box() {
+			// A box-drawing run: each byte is a SAP box code, one per cell.
+			cells := make([]Cell, 0, len(s.Text))
+			for i := 0; i < len(s.Text); i++ {
+				cells = append(cells, Cell{diag.BoxGlyph(s.Text[i]), StyleFrame})
+			}
+			g.putCells(s.Row, s.Col, cells)
 			continue
 		}
 		g.putCells(s.Row, s.Col, expandIcons(s.Text, st))

@@ -103,8 +103,37 @@ type ListSegment struct {
 
 // Ruled reports whether the run is a ULINE ruled line rather than text.
 // Inferred: SFE byte 0 was 0x08 on every ULINE run and 0x0a on every text run.
+//
+// Deprecated: SFE byte 0 is 0x08 on box-drawing runs AND on some text runs
+// ("001", a message text), so byte 0 alone mislabels text as ruled. Use Box.
 func (s ListSegment) Ruled() bool {
 	return s.Attr[0] == sfeRuled
+}
+
+// Box reports whether the run draws the list's grid — the column separators,
+// the horizontal borders, the corners and tees — rather than text. SFE byte 2
+// is 0x08 on every box-drawing run and 0x00 on text, confirmed across a full
+// SE16 list frame (byte 0 alone is not enough). A box run's characters are SAP
+// box-drawing codes, one per cell; map them with BoxGlyph.
+func (s ListSegment) Box() bool {
+	return s.Attr[2] == sfeBox
+}
+
+// sfeBox is SFE byte 2 on a box-drawing run.
+const sfeBox = 0x08
+
+// BoxGlyph maps one SAP list box-drawing code (the bytes '0'..':' a Box run
+// carries, one per cell) to its Unicode box character. Confirmed from a full
+// SE16 grid: '0'┌ '1'└ '2'┐ '3'┘ '4'─ '5'│ '6'├ '7'┤ '8'┴ '9'┬ ':'┼ — a clean
+// run over codes 0x30..0x3a. An unmapped byte returns a space.
+func BoxGlyph(code byte) rune {
+	const glyphs = "┌└┐┘─│├┤┴┬┼"
+	i := int(code) - '0'
+	rs := []rune(glyphs)
+	if i < 0 || i >= len(rs) {
+		return ' '
+	}
+	return rs[i]
 }
 
 // ListLine is the segments that share one row, in the order they arrived.
