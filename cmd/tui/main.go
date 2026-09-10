@@ -286,6 +286,21 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 
 	var events chan tcell.Event
 	if s.interactive {
+		// tcell owns the terminal now. Our fmt.Fprintf(os.Stderr, "tui: …")
+		// diagnostics share that terminal (fd 2) and would corrupt the drawn
+		// screen — the doubled menu/status bars — so route stderr to a log
+		// file for the life of the session and restore it on exit.
+		logf, lerr := os.CreateTemp("", "odgp-tui-*.log")
+		if lerr == nil {
+			fmt.Fprintf(os.Stderr, "tui: interactive; diagnostics -> %s\n", logf.Name())
+			orig := os.Stderr
+			os.Stderr = logf
+			defer func() {
+				os.Stderr = orig
+				logf.Close()
+				fmt.Fprintf(os.Stderr, "tui: session log at %s\n", logf.Name())
+			}()
+		}
 		scr, err := tcell.NewScreen()
 		if err != nil {
 			return fmt.Errorf("tcell: %w", err)
