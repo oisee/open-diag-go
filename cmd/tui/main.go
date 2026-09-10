@@ -240,6 +240,9 @@ type session struct {
 	logonSeen bool           // the screen on show is the logon screen
 	runOnce   string         // an OK-code to send on the first screen after logon
 	fkeys     map[int]string // function-key -> OK-code bindings (--fkeys)
+	palette   bool           // the command palette overlay is open
+	palLines  []string       // its lines
+	palScroll int            // its scroll offset
 }
 
 // run connects, sends the hello once, and loops rendering screens until the
@@ -487,6 +490,32 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	// given F-key fires is defined by the screen's GUI status and is not in
 	// the data we can read, so the binding is the user's to state. The screen's
 	// changed fields ride along, as they do for a pushbutton.
+	if k.kind == keyCtrlP {
+		s.palette = !s.palette
+		if s.palette {
+			s.palLines, s.palScroll = commandList(s.items), 0
+		}
+		s.redraw()
+		return nil
+	}
+	if s.palette {
+		switch k.kind {
+		case keyCtrlC:
+			cancel()
+		case keyEsc, keyCtrlP:
+			s.palette = false
+		case keyUp:
+			s.palScroll--
+		case keyDown:
+			s.palScroll++
+		case keyPgUp:
+			s.palScroll -= 10
+		case keyPgDn:
+			s.palScroll += 10
+		}
+		s.redraw()
+		return nil
+	}
 	if k.kind == keyFunc {
 		code, ok := s.fkeys[k.n]
 		if !ok {
@@ -668,6 +697,10 @@ func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
 	cr, cc := 0, 0
 	if s.interactive && s.scr != nil && !s.hasList && !s.scr.inCmd {
 		cr, cc = s.scr.markFocus(g, 3)
+	}
+	if s.interactive && s.palette {
+		s.drawPalette(g)
+		cr, cc = 0, 0
 	}
 	printClear(g.ANSI())
 	if cr > 0 {

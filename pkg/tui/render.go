@@ -436,3 +436,30 @@ func (g *Grid) Restyle(row, col, width int, f func(Style) Style) {
 		g.cells[row][c].Style = f(g.cells[row][c].Style)
 	}
 }
+
+// Overlay draws a bordered box of text lines at (row, col) over the grid, in
+// the given style, clipping lines to the box. It is for transient UI such as a
+// command list drawn on top of a screen.
+func (g *Grid) Overlay(row, col, width, height int, title string, lines []string, st Style) {
+	if width < 2 || height < 2 {
+		return
+	}
+	for r := row; r < row+height && r < g.Rows; r++ {
+		for c := col; c < col+width && c < g.Cols; c++ {
+			if r >= 0 && c >= 0 {
+				g.cells[r][c] = Cell{' ', st}
+			}
+		}
+	}
+	g.box(row, col, width, height, title, st)
+	for i, ln := range lines {
+		if i >= height-2 {
+			break
+		}
+		r := []rune(ln)
+		if len(r) > width-2 {
+			r = r[:width-2]
+		}
+		g.put(row+1+i, col+1, string(r), st)
+	}
+}

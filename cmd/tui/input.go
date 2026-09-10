@@ -34,6 +34,7 @@ const (
 	keyEsc
 	keyCtrlC
 	keyCtrlO
+	keyCtrlP
 	keyFunc // F1..F12, number in n
 )
 
@@ -121,6 +122,8 @@ func decodeKeys(b []byte) []key {
 			out = append(out, key{kind: keyCtrlC})
 		case c == 0x0f:
 			out = append(out, key{kind: keyCtrlO})
+		case c == 0x10:
+			out = append(out, key{kind: keyCtrlP})
 		case c < 0x20:
 			// other control keys: ignored
 		default:
