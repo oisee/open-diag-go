@@ -59,6 +59,7 @@ func main() {
 	interactive := flag.Bool("interactive", false, "read the keyboard: edit fields, Enter/OK-code send a PAI (one logon per run)")
 	dump := flag.String("dump", "", "record every frame both ways to this JSONL file (tap format, for cmd/lens)")
 	run := flag.String("run", "", "an OK-code to send on the first screen after logon, e.g. /nse38 (with --logon)")
+	fkeys := flag.String("fkeys", "", `bind function keys to OK-codes, comma-separated N=CODE, e.g. "8=STRT,3==BACK,12=/n" (F8 fires STRT, F3 fires =BACK, F12 fires /n); a bare CODE gets a leading = as a function code, the screen's GUI status decides what each F-key means`)
 	flag.Parse()
 
 	// Offline demo: no socket, no SAP. Animate locally through the renderer.
@@ -142,6 +143,7 @@ func main() {
 		controls:    controls,
 		compress:    *compress,
 		runOnce:     *run,
+		fkeys:       parseFKeys(*fkeys),
 	}
 	if *dump != "" {
 		d, err := newDumper(*dump)
@@ -156,6 +158,33 @@ func main() {
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)
 	}
+}
+
+// parseFKeys reads the --fkeys binding string ("8=STRT,3==BACK,12=/n") into a
+// map of F-key number -> OK-code. A bare code (no leading = or /) is taken as a
+// function code and gets a leading =, the form the OK-code field wants.
+func parseFKeys(spec string) map[int]string {
+	m := map[int]string{}
+	for _, pair := range strings.Split(spec, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		eq := strings.IndexByte(pair, '=')
+		if eq <= 0 {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(strings.TrimSpace(pair[:eq]), "%d", &n); err != nil || n < 1 || n > 24 {
+			continue
+		}
+		code := strings.TrimSpace(pair[eq+1:])
+		if code != "" && !strings.HasPrefix(code, "=") && !strings.HasPrefix(code, "/") {
+			code = "=" + code
+		}
+		m[n] = code
+	}
+	return m
 }
 
 // resolveCreds gathers logon credentials: from a .mcp.json server when --mcp
@@ -207,9 +236,10 @@ type session struct {
 	msg       string
 	hasList   bool // the current screen is a classic list, not a dynpro
 	items     []diag.Item
-	pending   bool   // a PAI is out, its answer not yet drawn
-	logonSeen bool   // the screen on show is the logon screen
-	runOnce   string // an OK-code to send on the first screen after logon
+	pending   bool           // a PAI is out, its answer not yet drawn
+	logonSeen bool           // the screen on show is the logon screen
+	runOnce   string         // an OK-code to send on the first screen after logon
+	fkeys     map[int]string // function-key -> OK-code bindings (--fkeys)
 }
 
 // run connects, sends the hello once, and loops rendering screens until the
@@ -453,6 +483,23 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 		}
 		return nil
 	}
+	// A function key sends the OK-code it is bound to (--fkeys). The code a
+	// given F-key fires is defined by the screen's GUI status and is not in
+	// the data we can read, so the binding is the user's to state. The screen's
+	// changed fields ride along, as they do for a pushbutton.
+	if k.kind == keyFunc {
+		code, ok := s.fkeys[k.n]
+		if !ok {
+			s.msgType, s.msg = 'W', fmt.Sprintf("F%d is not bound; map it with --fkeys %d=CODE", k.n, k.n)
+			s.redraw()
+			return nil
+		}
+		if err := s.sendPAI(code); err != nil {
+			s.msgType, s.msg = 'E', "send: "+err.Error()
+		}
+		s.redraw()
+		return nil
+	}
 	act, okcode := s.scr.handleKey(k)
 	switch act {
 	case actQuit:
@@ -484,7 +531,7 @@ func (s *session) sendPAI(okcode string) error {
 		// with the values the user typed, not the general builder — same frame
 		// shape a real GUI sends (compress, only-changed fields, echoed counter).
 		if s.template == nil {
-			return fmt.Errorf("no captured logon template to shape the answer from")
+			return fmt.Errorf("interactive logon needs --hello for the PAI env block (capture-free logon not built yet); reconnect with --hello captures/probe.jsonl")
 		}
 		out, err := buildLogonPAI(s.template, s.items, s.typedLogonCreds(), s.counter, s.compress)
 		if err != nil {
