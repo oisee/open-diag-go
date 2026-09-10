@@ -25,7 +25,8 @@ func fromMCP(path, server string) (credentials, string, error) {
 	}
 	var doc struct {
 		Servers map[string]struct {
-			Env map[string]string `json:"env"`
+			Args []string          `json:"args"`
+			Env  map[string]string `json:"env"`
 		} `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -39,20 +40,59 @@ func fromMCP(path, server string) (credentials, string, error) {
 		}
 		return credentials{}, "", fmt.Errorf("%s: no server %q (have %s)", path, server, strings.Join(names, ", "))
 	}
+	// A server may carry its settings in env (SAP_*) or on its command line
+	// (--user, --client, --language, --url); env wins.
+	argv := map[string]string{}
+	for i := 0; i+1 < len(s.Args); i++ {
+		if strings.HasPrefix(s.Args[i], "--") {
+			argv[s.Args[i]] = s.Args[i+1]
+		}
+	}
+	pick := func(env, arg string) string {
+		if v := s.Env[env]; v != "" {
+			return v
+		}
+		return argv[arg]
+	}
 	c := credentials{
-		Client:   s.Env["SAP_CLIENT"],
-		User:     s.Env["SAP_USER"],
+		Client:   pick("SAP_CLIENT", "--client"),
+		User:     pick("SAP_USER", "--user"),
 		Password: s.Env["SAP_PASSWORD"],
-		Lang:     s.Env["SAP_LANGUAGE"],
+		Lang:     pick("SAP_LANGUAGE", "--language"),
 	}
 	if c.Password == "" {
 		return c, "", fmt.Errorf("server %q has no SAP_PASSWORD; an SSO system cannot be logged on to over plain DIAG", server)
 	}
-	host := ""
-	if u, err := url.Parse(s.Env["SAP_URL"]); err == nil {
-		host = u.Hostname()
+	if c.User == "" {
+		return c, "", fmt.Errorf("server %q names no user", server)
 	}
-	return c, host, nil
+	// The dispatcher address is derived from the HTTP URL: ICM port 50NN00 or
+	// 80NN belongs to instance NN, whose dispatcher listens on 32NN.
+	addr := ""
+	if u, err := url.Parse(pick("SAP_URL", "--url")); err == nil && u.Hostname() != "" {
+		if inst := instanceOf(u.Port()); inst >= 0 {
+			addr = fmt.Sprintf("%s:32%02d", u.Hostname(), inst)
+		}
+	}
+	return c, addr, nil
+}
+
+// instanceOf reads the SAP instance number out of an ICM port: 50NN00 (HTTP
+// 5NN00 / HTTPS 5NN01 both fit) or 80NN, else -1.
+func instanceOf(port string) int {
+	var p int
+	if _, err := fmt.Sscanf(port, "%d", &p); err != nil {
+		return -1
+	}
+	switch {
+	case p >= 50000 && p < 60000:
+		return (p - 50000) / 100
+	case p >= 8000 && p < 8100:
+		return p - 8000
+	case p >= 44300 && p < 44400:
+		return p - 44300
+	}
+	return -1
 }
 
 // Live logon. The GUI answers the logon screen with one PAI frame: the
@@ -140,6 +180,14 @@ func buildLogonPAI(template []byte, screenItems []diag.Item, c credentials, coun
 			continue // leave the server's default (client and language are prefilled)
 		}
 		a := atoms[i]
+		// The real GUI sends only the fields the user changed. Client and
+		// language come prefilled on the screen, so when our value equals
+		// what the screen already shows, leave the field out — sending an
+		// unchanged field marked "changed" is not what the GUI does and the
+		// kernel rejects the logon.
+		if v == strings.TrimSpace(a.Value()) {
+			continue
+		}
 		a.Text = v
 		a.Length = len(v)
 		a.Flags[1] |= 0x01 // changed by the user
@@ -182,12 +230,33 @@ func encodeClient(h diag.Header, items []diag.Item, compress bool) ([]byte, erro
 		h.Compress = 0
 		return append(h.Bytes(), body...), nil
 	}
-	z, err := alv.Compress(body)
+	z, err := compressLZH(body)
 	if err != nil {
 		return nil, err
 	}
-	h.Compress = 1
+	h.Compress = 1 // the DIAG header byte the real GUI sends for its LZH body (empirically compress=1, not 2)
 	return append(h.Bytes(), z...), nil
+}
+
+// compressLZH builds the SAP-LZH stream a live SAP kernel accepts for a client
+// body: Huffman-only, exactly-terminated (BFINAL), no byte-aligned stored
+// block — the invariants vsp/pkg/sapcompress's continuous bit reader needs and
+// which alv.CompressExact holds. CompressExact lands on an exact byte length;
+// we give it a target comfortably above the natural Huffman size and let it pad
+// down with empty Huffman blocks, so the call always succeeds.
+func compressLZH(body []byte) ([]byte, error) {
+	const headerSize = 8
+	target := headerSize + 1 + len(body) + len(body)/8 + 128
+	if z, ok := alv.CompressExact(body, target); ok {
+		return z, nil
+	}
+	// Fall back upward if the estimate was somehow short.
+	for extra := 0; extra < len(body)+4096; extra++ {
+		if z, ok := alv.CompressExact(body, target+extra); ok {
+			return z, nil
+		}
+	}
+	return nil, fmt.Errorf("could not build a Huffman-only LZH body of %d bytes", len(body))
 }
 
 // counterOf reads the client frame counter (ST_USER.26) a frame carries, or 0
@@ -230,4 +299,37 @@ func recount(frame []byte, counter uint32, compress bool) ([]byte, error) {
 		}
 	}
 	return encodeClient(m.Header, items, compress)
+}
+
+// typedLogonCreds reads the credentials the user typed into the logon screen's
+// fields (client, user, password, language) from the live screen, matching the
+// ABAP field names to the cells the server placed them on. The password is not
+// trimmed; the others are.
+func (s *session) typedLogonCreds() credentials {
+	var c credentials
+	for _, it := range s.items {
+		if it.Type != diag.ItemAPPL4 || it.ID != 0x09 || it.SID != 0x02 {
+			continue
+		}
+		atoms, byName := diag.FieldIndex(it.Value)
+		at := func(name string) string {
+			i, ok := byName[name]
+			if !ok {
+				return ""
+			}
+			a := atoms[i]
+			return s.scr.valueAt(a.Row, a.Col)
+		}
+		if v := at("RSYST-MANDT"); v != "" {
+			c.Client = strings.TrimSpace(v)
+		}
+		if v := at("RSYST-BNAME"); v != "" {
+			c.User = strings.TrimSpace(v)
+		}
+		c.Password = at("RSYST-BCODE")
+		if v := at("RSYST-LANGU"); v != "" {
+			c.Lang = strings.TrimSpace(v)
+		}
+	}
+	return c
 }

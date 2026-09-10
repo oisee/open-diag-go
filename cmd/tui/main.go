@@ -22,6 +22,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -31,6 +32,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/oisee/open-rfc-go/ni"
@@ -54,6 +56,9 @@ func main() {
 	render := flag.String("render", "", "offline: read this tap capture and draw every S->C screen it holds, no connection")
 	demo := flag.Bool("demo", false, "offline: animate a self-contained demo through the styled TUI, no connection")
 	sceneMS := flag.Int("scene-ms", 4000, "milliseconds each demo scene runs (with --demo)")
+	interactive := flag.Bool("interactive", false, "read the keyboard: edit fields, Enter/OK-code send a PAI (one logon per run)")
+	dump := flag.String("dump", "", "record every frame both ways to this JSONL file (tap format, for cmd/lens)")
+	run := flag.String("run", "", "an OK-code to send on the first screen after logon, e.g. /nse38 (with --logon)")
 	flag.Parse()
 
 	// Offline demo: no socket, no SAP. Animate locally through the renderer.
@@ -75,42 +80,77 @@ func main() {
 		return
 	}
 
-	if *hello == "" {
-		fmt.Fprintln(os.Stderr, "tui: --hello <capture.jsonl> is required")
+	if *logon && *hello == "" {
+		fmt.Fprintln(os.Stderr, "tui: --logon still needs --hello for the PAI env block (capture-free logon is the next step); synthesized hello is read-only for now")
 		os.Exit(2)
+	}
+	var creds credentials
+	if *logon {
+		var err error
+		var derived string
+		creds, derived, err = resolveCreds(*mcpPath, *server, *user, *client, *lang)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "tui: logon:", err)
+			os.Exit(1)
+		}
+		if *addr == "" {
+			*addr = derived
+		}
 	}
 	if *addr == "" {
 		fmt.Fprintln(os.Stderr, "tui: --addr host:port is required")
 		os.Exit(2)
 	}
 
-	var creds credentials
-	if *logon {
-		var err error
-		creds, err = resolveCreds(*mcpPath, *server, *user, *client, *lang)
+	var helloBytes []byte
+	var err error
+	if *hello != "" {
+		helloBytes, err = helloFromCapture(*hello)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "tui: logon:", err)
+			fmt.Fprintln(os.Stderr, "tui: hello:", err)
 			os.Exit(1)
 		}
+	} else {
+		// Capture-free handshake: construct the opening hello from scratch.
+		helloBytes = diag.BuildHello("", *lang)
+		fmt.Fprintln(os.Stderr, "tui: synthesized hello (no --hello capture)")
 	}
-
-	helloBytes, err := helloFromCapture(*hello)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "tui: hello:", err)
-		os.Exit(1)
+	var template []byte
+	if *hello != "" {
+		template, _ = logonTemplate(*hello) // the captured client logon PAI, for --logon
 	}
-	template, _ := logonTemplate(*hello) // the captured client logon PAI, for --logon
+	var env *envTemplate
+	if template != nil {
+		env, _ = newEnvTemplate(template)
+	}
+	var controls [][]byte
+	if *logon || *interactive {
+		controls, _ = controlAnswers(*hello)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	s := &session{
-		plain:    *plain,
-		once:     *once,
-		logon:    *logon,
-		creds:    creds,
-		template: template,
-		compress: *compress,
+		plain:       *plain,
+		once:        *once,
+		logon:       *logon,
+		interactive: *interactive,
+		creds:       creds,
+		template:    template,
+		env:         env,
+		controls:    controls,
+		compress:    *compress,
+		runOnce:     *run,
+	}
+	if *dump != "" {
+		d, err := newDumper(*dump)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "tui: dump:", err)
+			os.Exit(1)
+		}
+		defer d.close()
+		s.dump = d
 	}
 	if err := s.run(ctx, *addr, helloBytes); err != nil {
 		fmt.Fprintln(os.Stderr, "tui:", err)
@@ -120,41 +160,62 @@ func main() {
 
 // resolveCreds gathers logon credentials: from a .mcp.json server when --mcp
 // is given, else from --user with the password in ODGP_PASSWORD.
-func resolveCreds(mcpPath, server, user, client, lang string) (credentials, error) {
+func resolveCreds(mcpPath, server, user, client, lang string) (credentials, string, error) {
 	if mcpPath != "" {
 		if server == "" {
-			return credentials{}, fmt.Errorf("--mcp needs --server")
+			return credentials{}, "", fmt.Errorf("--mcp needs --server")
 		}
-		c, _, err := fromMCP(mcpPath, server)
-		return c, err
+		return fromMCP(mcpPath, server)
 	}
 	if user == "" {
-		return credentials{}, fmt.Errorf("give --mcp/--server or --user")
+		return credentials{}, "", fmt.Errorf("give --mcp/--server or --user")
 	}
 	pw := os.Getenv("ODGP_PASSWORD")
 	if pw == "" {
-		return credentials{}, fmt.Errorf("set ODGP_PASSWORD for --user %s", user)
+		return credentials{}, "", fmt.Errorf("set ODGP_PASSWORD for --user %s", user)
 	}
-	return credentials{Client: client, User: user, Password: pw, Lang: lang}, nil
+	return credentials{Client: client, User: user, Password: pw, Lang: lang}, "", nil
 }
 
 // session is one connection's state: the flags, the chrome carried between
-// screens, and whether the one logon attempt has been made.
+// screens, the interactive screen, and whether the one logon attempt has been
+// made.
 type session struct {
-	plain    bool
-	once     bool
-	logon    bool
-	compress bool
-	creds    credentials
-	template []byte
-	chrome   chrome
-	loggedOn bool
-	drewOnce bool
+	plain       bool
+	once        bool
+	logon       bool
+	interactive bool
+	compress    bool
+	creds       credentials
+	template    []byte
+	env         *envTemplate
+	controls    [][]byte // captured RFC_TR.01 answers, replayed in order
+	controlNext int
+	chrome      chrome
+	loggedOn    bool // the one logon PAI of this run has been sent
+	drewOnce    bool
+	conn        net.Conn
+	dump        *dumper
+
+	// the live screen, for the interactive mode
+	scr       *screenState
+	ses       []byte // the server's last session id
+	dynn      []byte // the server's last DYNN.01
+	counter   uint32 // the server's last ST_USER.26
+	stat      byte   // the server's last header mode-stat, echoed
+	msgType   byte   // last status message, redrawn under local edits
+	msg       string
+	hasList   bool // the current screen is a classic list, not a dynpro
+	items     []diag.Item
+	pending   bool   // a PAI is out, its answer not yet drawn
+	logonSeen bool   // the screen on show is the logon screen
+	runOnce   string // an OK-code to send on the first screen after logon
 }
 
 // run connects, sends the hello once, and loops rendering screens until the
 // connection closes, the context is cancelled, or (with once) the first
-// screen is drawn.
+// screen is drawn. Interactive, it also reads the keyboard and answers
+// screens with PAIs.
 func (s *session) run(parent context.Context, addr string, helloBytes []byte) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -165,8 +226,12 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 		return err
 	}
 	defer conn.Close()
+	s.conn = conn
 	go func() { <-ctx.Done(); conn.Close() }()
 
+	if s.dump != nil {
+		s.dump.write("C->S", helloBytes)
+	}
 	frame, err := ni.EncodeFrame(helloBytes)
 	if err != nil {
 		return fmt.Errorf("encoding hello: %w", err)
@@ -178,40 +243,97 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 	if s.logon {
 		mode = "live logon as " + s.creds.User
 	}
+	if s.interactive {
+		mode += ", interactive"
+	}
 	fmt.Fprintf(os.Stderr, "tui: connected to %s, hello sent (%d bytes); %s\n", addr, len(helloBytes), mode)
 
-	if !s.once {
+	keys := make(chan key, 16)
+	if s.interactive {
+		raw, err := enterRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			return fmt.Errorf("raw terminal: %w", err)
+		}
+		defer func() {
+			raw.restore()
+			fmt.Print("\x1b[?25h\r\n")
+		}()
+		go readKeys(ctx, keys)
+	} else if !s.once {
 		go watchQuit(ctx, cancel)
 	}
 
-	dec, err := ni.NewFrameDecoder(64 << 20)
-	if err != nil {
-		return err
+	// The socket is read on its own goroutine; frames and keys meet here.
+	type inbound struct {
+		payload []byte
+		err     error
 	}
-	buf := make([]byte, 64<<10)
-	for {
-		n, err := conn.Read(buf)
+	frames := make(chan inbound, 16)
+	go func() {
+		dec, err := ni.NewFrameDecoder(64 << 20)
 		if err != nil {
-			if ctx.Err() != nil {
+			frames <- inbound{err: err}
+			return
+		}
+		buf := make([]byte, 64<<10)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				frames <- inbound{err: err}
+				return
+			}
+			fs, err := dec.Push(buf[:n])
+			if err != nil {
+				frames <- inbound{err: fmt.Errorf("ni framing: %w", err)}
+				return
+			}
+			for _, p := range fs {
+				frames <- inbound{payload: p}
+			}
+		}
+	}()
+
+	// A terminal resize (SIGWINCH) repaints the current screen at the new
+	// size. The channel stays nil when not interactive, so its select arm
+	// never fires.
+	var winch chan os.Signal
+	if s.interactive {
+		winch = make(chan os.Signal, 1)
+		signal.Notify(winch, syscall.SIGWINCH)
+		defer signal.Stop(winch)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-winch:
+			firstPaint = true // clear fully once at the new size
+			s.redraw()
+		case k := <-keys:
+			if err := s.handleKey(k, cancel); err != nil {
+				return err
+			}
+		case in := <-frames:
+			if in.err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				fmt.Fprintf(os.Stderr, "tui: connection closed: %v\n", in.err)
 				return nil
 			}
-			fmt.Fprintf(os.Stderr, "tui: connection closed: %v\n", err)
-			return nil
-		}
-		frames, err := dec.Push(buf[:n])
-		if err != nil {
-			return fmt.Errorf("ni framing: %w", err)
-		}
-		for _, payload := range frames {
-			if name, ok := diag.NIControl(payload); ok {
+			if s.dump != nil {
+				s.dump.write("S->C", in.payload)
+			}
+			if name, ok := diag.NIControl(in.payload); ok {
 				if name == "NI_PING" {
-					if _, err := conn.Write(mustPong()); err != nil {
+					if err := s.send([]byte("NI_PONG\x00")); err != nil {
 						return fmt.Errorf("sending NI_PONG: %w", err)
 					}
 				}
 				continue
 			}
-			drawn, err := s.handleFrame(conn, payload)
+			drawn, err := s.handleFrame(in.payload)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "tui: frame skipped: %v\n", err)
 				continue
@@ -223,60 +345,266 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 	}
 }
 
-// handleFrame decodes one server frame, updates the chrome from it, answers it
-// when we are logging on, and draws whatever screen it carries. It returns
-// whether a screen was drawn.
-func (s *session) handleFrame(conn net.Conn, payload []byte) (bool, error) {
+// send NI-frames one payload, records it, and writes it to the server.
+func (s *session) send(payload []byte) error {
+	if s.dump != nil {
+		s.dump.write("C->S", payload)
+	}
+	return writeFrame(s.conn, payload)
+}
+
+// handleFrame decodes one server frame, updates the chrome and the session
+// state from it, answers it when it asks for something we answer on our own
+// (the logon screen with --logon, a Control Framework call with a captured
+// answer), and draws whatever screen it carries. It returns whether a screen
+// was drawn.
+func (s *session) handleFrame(payload []byte) (bool, error) {
 	m, err := diag.ParseMessage(payload, false)
 	if err != nil {
 		return false, err
 	}
 	items := diag.ParseItems(m.Body)
 	msgType, msg := s.chrome.update(items)
+	s.stat = m.Header.ModeStat
+	for _, it := range items {
+		switch {
+		case it.Type == diag.ItemSES:
+			s.ses = append([]byte{}, it.Value...)
+		case it.Type == diag.ItemAPPL && it.ID == 0x05 && it.SID == 0x01:
+			s.dynn = append([]byte{}, it.Value...)
+		case it.Type == diag.ItemAPPL && it.ID == 0x04 && it.SID == 0x26 && len(it.Value) == 4:
+			s.counter = binary.BigEndian.Uint32(it.Value)
+		}
+	}
 
 	if s.logon {
-		if err := s.answerLogon(conn, items); err != nil {
+		if err := s.answerLogon(items); err != nil {
 			fmt.Fprintf(os.Stderr, "tui: logon step: %v\n", err)
+		}
+	}
+	if s.loggedOn && len(s.controls) > 0 && hasRFCTR(items, 0x00) {
+		if _, err := s.answerControl(s.counter); err != nil {
+			fmt.Fprintf(os.Stderr, "tui: control answer: %v\n", err)
 		}
 	}
 
 	canvas, note, ok := s.chrome.frameCanvas(items)
+	if !ok && isScreenFrame(items) {
+		// A screen with no dynpro atoms — SAP Easy Access draws its tree in
+		// a control we do not render — still has chrome, a title and an
+		// OK-code field to type into, so it is drawn as an empty canvas.
+		r, c := s.chrome.canvasSize()
+		canvas, note, ok = tui.NewGrid(r, c), "no dynpro atoms (control screen)", true
+	}
 	if !ok {
 		// A handshake or status-only frame: repaint the status bar so a
 		// "saving…" or an error message still shows under the last chrome.
 		if s.drewOnce && msg != "" {
-			s.drawStatusOnly(msgType, msg)
+			s.msgType, s.msg = msgType, msg
+			if s.interactive && s.scr != nil {
+				s.redraw()
+			} else {
+				s.drawStatusOnly(msgType, msg)
+			}
 		}
 		return false, nil
 	}
-	s.draw(canvas, msgType, msg, note)
+	s.items = items
+	s.msgType, s.msg = msgType, msg
+	s.pending = false
+	s.logonSeen = isLogonScreen(items)
+	if s.interactive {
+		s.hasList = diag.HasListSegments(items)
+		s.scr = newScreenState(items)
+		s.redraw()
+	} else {
+		s.draw(canvas, msgType, msg, note)
+	}
 	s.drewOnce = true
+	if s.runOnce != "" && s.loggedOn && !s.logonSeen {
+		cmd := s.runOnce
+		s.runOnce = ""
+		if err := s.sendOKCode(cmd); err != nil {
+			fmt.Fprintf(os.Stderr, "tui: --run %q: %v\n", cmd, err)
+		}
+	}
 	return true, nil
+}
+
+// isScreenFrame reports whether a frame that carries no dynpro atoms still
+// presents a screen: a new window title, GUI status or dynpro descriptor.
+func isScreenFrame(items []diag.Item) bool {
+	for _, it := range items {
+		switch {
+		case it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x0a, // VARINFO.0a title
+			it.Type == diag.ItemAPPL4 && it.ID == 0x0b && it.SID == 0x01, // MNUENTRY.01
+			it.Type == diag.ItemAPPL && it.ID == 0x05 && it.SID == 0x01:  // DYNN.01
+			return true
+		}
+	}
+	return false
+}
+
+// handleKey applies one key to the screen, sending a PAI when it asks for one.
+func (s *session) handleKey(k key, cancel context.CancelFunc) error {
+	if s.scr == nil {
+		if k.kind == keyCtrlC {
+			cancel()
+		}
+		return nil
+	}
+	act, okcode := s.scr.handleKey(k)
+	switch act {
+	case actQuit:
+		cancel()
+	case actRedraw:
+		s.redraw()
+	case actSend:
+		if err := s.sendPAI(okcode); err != nil {
+			s.msgType, s.msg = 'E', "send: "+err.Error()
+		}
+		s.redraw()
+	}
+	return nil
+}
+
+// sendPAI answers the screen on show with the user's edits and OK-code. The
+// logon screen is answered at most once per run, whoever fills it in: a
+// second wrong password would count towards the user's lock.
+func (s *session) sendPAI(okcode string) error {
+	if s.pending {
+		return fmt.Errorf("previous answer still pending")
+	}
+	if s.logonSeen {
+		if s.loggedOn {
+			return fmt.Errorf("one logon attempt per run; restart to try again")
+		}
+		s.loggedOn = true
+		// A logon submitted by hand goes through the proven logon-PAI builder
+		// with the values the user typed, not the general builder — same frame
+		// shape a real GUI sends (compress, only-changed fields, echoed counter).
+		if s.template == nil {
+			return fmt.Errorf("no captured logon template to shape the answer from")
+		}
+		out, err := buildLogonPAI(s.template, s.items, s.typedLogonCreds(), s.counter, s.compress)
+		if err != nil {
+			return err
+		}
+		if err := s.send(out); err != nil {
+			return err
+		}
+		s.pending = true
+		s.msgType, s.msg = 0, ""
+		fmt.Fprintf(os.Stderr, "tui: logon PAI sent (typed, %d bytes)\n", len(out))
+		return nil
+	}
+	if s.scr == nil {
+		return s.sendOKCode(okcode)
+	}
+	if s.env == nil {
+		return fmt.Errorf("no captured client frame to shape the PAI from")
+	}
+	out, err := buildPAI(s.env, paiInput{
+		OKCode:  okcode,
+		Changed: s.scr.changed(),
+		Cursor:  s.scr.cursor(),
+		SES:     s.ses,
+		DYNN:    s.dynn,
+		Counter: s.counter, // the counter is server-owned and pure-echoed by the client
+		Stat:    s.stat,
+	}, s.compress)
+	if err != nil {
+		return err
+	}
+	if err := s.send(out); err != nil {
+		return err
+	}
+	s.pending = true
+	s.msgType, s.msg = 0, ""
+	what := "Enter"
+	if okcode != "" {
+		what = okcode
+	}
+	fmt.Fprintf(os.Stderr, "tui: PAI sent (%s, %d changed fields, %d bytes)\n", what, len(s.scr.changed()), len(out))
+	return nil
+}
+
+// sendOKCode sends a PAI carrying only an OK-code (a function code or a system
+// command like /nse38), with no changed fields — the scripting primitive. It
+// does not need the interactive screen state, so it works in --logon batch runs
+// too. The counter is the server's last value (pure-echoed), SES and DYNN the
+// server's last.
+func (s *session) sendOKCode(okcode string) error {
+	if s.env == nil {
+		return fmt.Errorf("no captured client frame to shape the PAI from")
+	}
+	out, err := buildPAI(s.env, paiInput{
+		OKCode:  okcode,
+		SES:     s.ses,
+		DYNN:    s.dynn,
+		Counter: s.counter,
+		Stat:    s.stat,
+	}, s.compress)
+	if err != nil {
+		return err
+	}
+	if err := s.send(out); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "tui: OK-code %q sent (%d bytes)\n", okcode, len(out))
+	return nil
 }
 
 // answerLogon answers the logon screen exactly once, shaping the PAI from the
 // captured template and this frame's session id and counter.
-func (s *session) answerLogon(conn net.Conn, items []diag.Item) error {
+func (s *session) answerLogon(items []diag.Item) error {
 	if s.loggedOn || !isLogonScreen(items) {
 		return nil
 	}
 	if s.template == nil {
 		return fmt.Errorf("no captured logon PAI to shape the answer from")
 	}
-	out, err := buildLogonPAI(s.template, items, s.creds, counterOf(items)+1, s.compress)
+	// The GUI echoes the logon screen's counter unchanged in its logon PAI
+	// (screen counter 1 -> PAI counter 1), it does not increment for the
+	// logon submit, so echo counterOf(items) rather than +1.
+	out, err := buildLogonPAI(s.template, items, s.creds, counterOf(items), s.compress)
 	if err != nil {
 		return err
 	}
-	if err := writeFrame(conn, out); err != nil {
+	if err := s.send(out); err != nil {
 		return err
 	}
 	s.loggedOn = true
+	s.pending = true
 	fmt.Fprintln(os.Stderr, "tui: logon sent")
 	return nil
 }
 
+// redraw paints the interactive screen: the atoms with the local edits, the
+// focused field inverted, the terminal cursor on the caret; or the list.
+func (s *session) redraw() {
+	if s.scr == nil {
+		return
+	}
+	rows, cols := s.chrome.canvasSize()
+	var canvas *tui.Grid
+	if s.hasList {
+		canvas = tui.RenderList(diag.ParseListItems(s.items), rows, cols)
+	} else {
+		canvas = tui.Render(s.scr.overlay(), rows, cols)
+	}
+	msgType, msg := s.msgType, s.msg
+	if s.scr.inCmd {
+		msgType, msg = 0, "OK-code: "+s.scr.cmd+"▏"
+	} else if s.pending {
+		msgType, msg = 0, "…"
+	}
+	s.draw(canvas, msgType, msg, s.scr.note())
+}
+
 // draw renders the frame. With chrome it composes the GUI window round the
-// canvas and prints it in colour; plain, it prints the bare grid.
+// canvas and prints it in colour; plain, it prints the bare grid. Interactive,
+// it also marks the focused field and places the terminal cursor on it.
 func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
 	rows, cols := terminalSize()
 	if s.plain {
@@ -286,8 +614,20 @@ func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
 		printClear(canvas.String() + "\n\x1b[7m " + s.bareStatus(note) + " \x1b[0m")
 		return
 	}
-	g := s.chrome.compose(canvas, msgType, msg, note+"  q quits", rows, cols)
+	if !s.interactive {
+		note += "  q quits"
+	}
+	g := s.chrome.compose(canvas, msgType, msg, note, rows, cols)
+	cr, cc := 0, 0
+	if s.interactive && s.scr != nil && !s.hasList && !s.scr.inCmd {
+		cr, cc = s.scr.markFocus(g, 3)
+	}
 	printClear(g.ANSI())
+	if cr > 0 {
+		fmt.Printf("\x1b[%d;%dH\x1b[?25h", cr, cc)
+	} else if s.interactive {
+		fmt.Print("\x1b[?25l")
+	}
 }
 
 // drawStatusOnly repaints only the status bar under the current chrome, for a
@@ -306,9 +646,43 @@ func (s *session) bareStatus(note string) string {
 	if s.chrome.program != "" {
 		parts = append(parts, "prog "+s.chrome.program)
 	}
-	parts = append(parts, note, "read-only  q quits")
+	mode := "read-only  q quits"
+	if s.interactive {
+		mode = "interactive"
+	}
+	parts = append(parts, note, mode)
 	return strings.Join(parts, "  |  ")
 }
+
+// dumper records every frame both ways as tap-style JSON lines, so a live
+// session can be decoded afterwards with cmd/lens.
+type dumper struct {
+	enc   *json.Encoder
+	f     *os.File
+	index int
+}
+
+func newDumper(path string) (*dumper, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	return &dumper{enc: json.NewEncoder(f), f: f}, nil
+}
+
+func (d *dumper) write(dir string, payload []byte) {
+	d.enc.Encode(struct {
+		At    time.Time `json:"at"`
+		Dir   string    `json:"dir"`
+		Conn  int       `json:"conn"`
+		Index int       `json:"index"`
+		Len   int       `json:"len"`
+		Hex   string    `json:"hex"`
+	}{time.Now(), dir, 1, d.index, len(payload), hex.EncodeToString(payload)})
+	d.index++
+}
+
+func (d *dumper) close() { d.f.Close() }
 
 // firstPaint tracks whether the screen has been cleared once this run.
 var firstPaint = true

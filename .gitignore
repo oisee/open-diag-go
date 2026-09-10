@@ -16,3 +16,6 @@ zz_*.go
 
 # research-agent scratch decoders
 scratch_*
+
+# Local MCP server configs hold live SAP credentials — never commit.
+.mcp.json

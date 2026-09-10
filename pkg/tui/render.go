@@ -422,3 +422,17 @@ func (g *Grid) String() string {
 	}
 	return b.String()
 }
+
+// Restyle applies f to the style of width cells from (row, col), clipped to
+// the grid. A caller marks keyboard focus with it without redrawing the atom.
+func (g *Grid) Restyle(row, col, width int, f func(Style) Style) {
+	if row < 0 || row >= g.Rows {
+		return
+	}
+	for c := col; c < col+width && c < g.Cols; c++ {
+		if c < 0 {
+			continue
+		}
+		g.cells[row][c].Style = f(g.cells[row][c].Style)
+	}
+}

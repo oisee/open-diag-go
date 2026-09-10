@@ -337,6 +337,11 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 	buf := make([]byte, 64<<10)
 	// group is the client frame of the capture the next reply group belongs to.
 	group := 0
+	// clientFrames counts the data (non-NI) frames this connection has sent.
+	// The 200-byte DP header rides only the very first one (the INI frame),
+	// so only that frame is parsed with the DP-header skip — a live client's
+	// later frames carry no DP header, whatever replay group we are on.
+	clientFrames := 0
 	if mode == "menu" || mode == "counter" {
 		group = menuAt
 	}
@@ -388,8 +393,9 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				}
 				continue
 			}
-			first := group == 0 || (group == menuAt && mode != "logon")
-			m, perr := diag.ParseMessage(payload, first && len(payload) > diag.DPHeaderLen)
+			hasDP := clientFrames == 0 && len(payload) > diag.DPHeaderLen
+			clientFrames++
+			m, perr := diag.ParseMessage(payload, hasDP)
 			if perr == nil {
 				log("<- client frame, %d bytes, %s, %d items", len(payload), m.Header, len(diag.ParseItems(m.Body)))
 			} else {
