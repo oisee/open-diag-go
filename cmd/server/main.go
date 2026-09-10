@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"compress/flate"
 	"context"
 	"flag"
 	"fmt"
@@ -26,16 +27,39 @@ import (
 	"github.com/oisee/open-rfc-go/ni"
 
 	"github.com/oisee/open-diag-go-pro/pkg/alv"
+	"github.com/oisee/open-diag-go-pro/pkg/demo"
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
 	"github.com/oisee/open-diag-go-pro/pkg/frame"
 	"github.com/oisee/open-diag-go-pro/pkg/replay"
 )
 
+// Thin aliases to the shared demo engine (pkg/demo), kept so the server's own
+// push renderers and the LED list renderer read as before.
+func triangle(x float64, span int) int     { return demo.Triangle(x, span) }
+func ledSegments(n int) []diag.ListSegment { return demo.LEDSegments(n) }
+func centre(text string, width int) string { return demo.Centre(text, width) }
+
 var capturePath string
 var animMsgType byte
 var animMsgLoop int
 var demoSceneMS int
+
+// demoSceneFilter, when set, restricts the demo to the one scene of that name,
+// looping it — so a single effect can be watched and iterated on in isolation.
+var demoSceneFilter string
 var recolorOn bool
+
+// recolorIdentity, when set, makes maybeRecolor rewrite each ALV cell with the
+// colour it already has. That runs the full decode→recompress→re-chunk pipeline
+// while changing nothing, so a live GUI test isolates whether our recompression
+// alone (not the colour values) is what a real GUI rejects.
+var recolorIdentity bool
+
+// recolorPassthrough, when set, makes maybeRecolor re-encode a grid frame with
+// Compress=0 but leave the ALV blob byte-identical — no recolour at all. It
+// isolates whether the live GUI stalls on our uncompressed DIAG re-encode itself
+// (independent of any ALV recompression).
+var recolorPassthrough bool
 
 // maybeRecolor patches the colours of any ALV grid a frame carries with our own
 // pattern, so a replayed grid shows the colours we choose. It returns nil when
@@ -55,10 +79,23 @@ func maybeRecolor(data []byte, log func(string, ...any)) []byte {
 		if e != nil || len(g.Rows) == 0 {
 			continue
 		}
-		patched, pe := alv.PatchColours(it.Value, func(row, col int) int {
+		if recolorPassthrough {
+			// Leave the blob untouched; just mark the frame so it is re-encoded
+			// uncompressed. This tells us if the Compress=0 re-frame alone stalls.
+			changed = true
+			log("passthrough grid frame (%d cols, %d rows), blob unchanged", len(g.Cols), len(g.Rows))
+			continue
+		}
+		fn := func(row, col int) int {
 			// A distinctive diagonal, clearly ours, so a live test is unambiguous.
 			return alv.ColourField((row*2+col*3)%7+1, true, false)
-		})
+		}
+		if recolorIdentity {
+			// Rewrite each cell with its own colour: the pipeline runs, nothing
+			// changes, so a live test blames the recompression, not the colours.
+			fn = func(row, col int) int { return g.Colours[row][col] }
+		}
+		patched, pe := alv.PatchColours(it.Value, fn)
 		if pe == nil {
 			items[i].Value = patched
 			changed = true
@@ -89,12 +126,22 @@ func main() {
 	msgType := flag.String("msg-type", "E", "status message to trigger a sound under the animation: S, W, E or I (empty = none)")
 	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame)")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene of the demo mode runs, in milliseconds (wall clock, not frames)")
+	scene := flag.String("scene", "", "demo mode: play only this one scene, looping (e.g. fireworks, helix, equalizer, matrix)")
 	recolor := flag.Bool("recolor", false, "patch the colours of any ALV grid in a replayed frame with our own pattern")
+	recolorId := flag.Bool("recolor-identity", false, "recolor pipeline runs but writes each cell its existing colour (isolates recompression from colour values)")
+	recolorStored := flag.Bool("recolor-stored", false, "compress recoloured ALV blobs with DEFLATE stored blocks instead of dynamic Huffman")
+	recolorPass := flag.Bool("reencode", false, "re-encode grid frames with Compress=0 but leave the ALV blob byte-identical (isolates the DIAG re-encode)")
 	flag.Parse()
 
 	capturePath = *capture
 	demoSceneMS = *sceneMS
-	recolorOn = *recolor
+	demoSceneFilter = *scene
+	recolorOn = *recolor || *recolorId || *recolorPass
+	recolorIdentity = *recolorId
+	recolorPassthrough = *recolorPass
+	if *recolorStored {
+		alv.CompressLevel = flate.NoCompression
+	}
 	cap, err := replay.Load(*capture, *conn)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "server:", err)
@@ -838,20 +885,6 @@ func withSound(items []diag.Item, n int) []diag.Item {
 	return out
 }
 
-// widgetsScreen animates a few real widgets — buttons and a framed box —
-// by moving them, not by redrawing a grid of characters. A frame is a
-// handful of elements, so it is small and the GUI keeps up at a fast
-// cadence; the motion is smoother than the starfield's.
-// centre pads text to width with spaces on both sides.
-func centre(text string, width int) string {
-	if len(text) >= width {
-		return text
-	}
-	left := (width - len(text)) / 2
-	right := width - len(text) - left
-	return fmt.Sprintf("%*s%s%*s", left, "", text, right, "")
-}
-
 func widgetsScreen(t int) *frame.Screen {
 	scr := frame.New(27, 120)
 	scr.Frame(0, 0, 78, 24, "OPEN-DIAG-GO-PRO  --  widgets orbiting, drawn by Go")
@@ -913,305 +946,6 @@ func widgetsRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any
 	}
 }
 
-// A scene is one act of the demo: a name, the approach it shows off, and a
-// draw that lays it onto the screen given ts — the seconds elapsed inside
-// this scene. Every scene is driven by wall-clock time, so the motion is the
-// same speed whatever the frame cadence, and a dropped frame never stutters
-// it: at 3 s a scene ends after 3 real seconds, not after N frames.
-type scene struct {
-	name     string
-	approach string
-	draw     func(ts float64, scr *frame.Screen)
-	// dur is this scene's length; 0 means use the demo's default (-scene-ms).
-	// The login opener needs longer than a beat, so it sets its own.
-	dur time.Duration
-	// bare drops the demo's caption and footer for this scene, so the login
-	// opener can look like a real logon screen and nothing else.
-	bare bool
-}
-
-// demoScenes are the acts, each a different way of getting motion onto a real
-// GUI, ordered from the lightest frame to the heaviest so the contrast in
-// bytes-per-frame is easy to feel.
-func demoScenes() []scene {
-	return []scene{
-		{"login", "a login form that sits, drifts a square, orbits, then multiplies", sceneLogin, 26 * time.Second, true},
-		{"orbit", "3 widgets moved by coordinate, sized by depth", sceneOrbit, 0, false},
-		{"equalizer", "a row of buttons whose Height is the graphics — bars", sceneEqualizer, 0, false},
-		{"snake", "a label snake on a Lissajous path, with a fading trail", sceneSnake, 0, false},
-		{"matrix", "sparse falling columns — the grid used lightly", sceneMatrix, 0, false},
-		{"plasma", "LED plasma in the list channel — colour + letters", ledFallback, 0, false},
-		{"rings", "LED rings in the list channel", ledFallback, 0, false},
-		{"ball", "a bright ball bouncing on the LED field", ledFallback, 0, false},
-		{"starfield", "the whole character grid redrawn every frame (~80 labels)", sceneStars, 0, false},
-		{"icons", "a grid of real SAP icons, drawn by us via output fields", sceneIcons, 0, false},
-	}
-}
-
-// loginFields places the four logon fields as loose elements at (top,left):
-// no box around them, just the labels and inputs the way the real screen has
-// them (label, then input 19 columns over), so a copy that moves or multiplies
-// is fields on the canvas, not a widget in a frame. idx keeps each copy's
-// field names distinct.
-func loginFields(scr *frame.Screen, top, left, idx int) {
-	if top < 0 {
-		top = 0
-	}
-	if left < 0 {
-		left = 0
-	}
-	scr.Text(top+0, left+0, "Client")
-	scr.Input(top+0, left+19, 3, fmt.Sprintf("MANDT%d", idx), "001")
-	scr.Text(top+2, left+0, "User")
-	scr.Input(top+2, left+19, 12, fmt.Sprintf("BNAME%d", idx), "")
-	scr.Text(top+3, left+0, "Password")
-	scr.InputHidden(top+3, left+19, 12, fmt.Sprintf("BCODE%d", idx), "")
-	scr.Text(top+5, left+0, "Logon Language")
-	scr.Input(top+5, left+19, 2, fmt.Sprintf("LANGU%d", idx), "EN")
-}
-
-// nativeLogon draws the logon screen the way the capture showed it: the four
-// loose fields at their real rows and columns, and the Information box to the
-// right whose lines are output fields beginning with the @0S@ info icon — the
-// same output-field-with-icon the real screen uses. Placeholder values only,
-// never the captured credentials.
-func nativeLogon(scr *frame.Screen) {
-	// Exactly the capture's layout: fields at row 0/2/3/5, label col 1 and
-	// input col 20, and the Information box at row 0 col 35, 56 wide and 19
-	// tall — the real dimensions, so it is compact, not a page-tall panel.
-	loginFields(scr, 0, 1, 0)
-	scr.Frame(0, 35, 56, 19, "Information")
-	// The welcome lines, wrapped to the box's inner width (col 37..90, so ~53
-	// characters) so nothing is clipped; the @0S@ counts as its four bytes.
-	scr.Output(1, 37, 53, "INFO0", "@0S@ ABAP Cloud Developer Trial 2023 initial shipment", false)
-	scr.Output(3, 37, 53, "INFO1", "@0S@ Since ABAP Cloud Developer Trial is a free", false)
-	scr.Output(4, 37, 53, "INFO2", "offering for education and demo purposes only,", false)
-	scr.Output(5, 37, 53, "INFO3", "we offer it with SAP Community support. That", false)
-	scr.Output(6, 37, 53, "INFO4", "means that no primary support is available", false)
-	scr.Output(7, 37, 53, "INFO5", "for this product.", false)
-	// The standard logon actions (New password, and so on) live in the GUI
-	// status bar above the canvas, which we do not synthesize yet, so they are
-	// not drawn here — a canvas button in their place read as wrong.
-}
-
-// orbitLogins draws count logon forms orbiting a centre at the given angle,
-// spaced evenly round the circle.
-func orbitLogins(scr *frame.Screen, ang float64, count int) {
-	const cx, cy, rx, ry = 38.0, 9.0, 30.0, 6.0
-	for i := 0; i < count; i++ {
-		a := ang + float64(i)*(2.0*math.Pi/float64(count))
-		left := int(cx + rx*math.Cos(a))
-		top := int(cy + ry*math.Sin(a))
-		loginFields(scr, top, left, i)
-	}
-}
-
-// sceneLogin is the demo's opener: an ordinary-looking logon box that holds
-// still for a few seconds, then drifts once round a square, then orbits, then
-// becomes two, then three — a familiar thing behaving impossibly, all drawn by
-// Go. Its phases are keyed to ts (seconds into the scene).
-func sceneLogin(ts float64, scr *frame.Screen) {
-	const homeTop, homeLeft = 4, 10
-	const dx, dy = 44.0, 11.0 // the square's sides (wider than tall: cells are)
-	switch {
-	case ts < 6: // sit still, exactly like the real logon screen
-		nativeLogon(scr)
-	case ts < 12: // one lap round a square: right, down, left, up
-		f := (ts - 6) / 6 * 4 // 0..4, one side per unit
-		seg := int(f)
-		fr := f - float64(seg)
-		top, left := float64(homeTop), float64(homeLeft)
-		switch seg {
-		case 0:
-			left = homeLeft + fr*dx
-		case 1:
-			left = homeLeft + dx
-			top = homeTop + fr*dy
-		case 2:
-			left = homeLeft + (1-fr)*dx
-			top = homeTop + dy
-		default:
-			top = homeTop + (1-fr)*dy
-		}
-		loginFields(scr, int(top), int(left), 0)
-	case ts < 18: // orbit, one form
-		orbitLogins(scr, (ts-12)*1.4, 1)
-	case ts < 22: // two forms
-		orbitLogins(scr, (ts-12)*1.4, 2)
-	default: // three forms, then the demo moves on
-		orbitLogins(scr, (ts-12)*1.4, 3)
-	}
-}
-
-// sceneBounce is a DVD-logo bounce: one label ricocheting off the edges. The
-// position is a triangle wave of ts, so it turns at the walls on its own.
-func sceneBounce(ts float64, scr *frame.Screen) {
-	const w, h = 66, 18
-	logo := "[ Go > DIAG ]"
-	px := triangle(ts*22.0, w-len(logo))
-	py := triangle(ts*9.0, h-1)
-	scr.Text(2+py, 4+px, logo)
-	scr.Text(int(3+py+1), 4+px, "  no ABAP  ")
-}
-
-// triangle bounces a value between 0 and span: it rises, hits the wall, and
-// comes back, forever.
-func triangle(x float64, span int) int {
-	if span <= 0 {
-		return 0
-	}
-	p := math.Mod(x, float64(2*span))
-	if p < 0 {
-		p += float64(2 * span)
-	}
-	if p > float64(span) {
-		p = float64(2*span) - p
-	}
-	return int(p)
-}
-
-// sceneOrbit is the three widgets orbiting counter-clockwise, each button
-// grown by its depth on the circle — the same effect as the widgets mode,
-// but its angle comes from ts so the spin is one turn every ~5.7 s whatever
-// the cadence.
-func sceneOrbit(ts float64, scr *frame.Screen) {
-	const cx, cy, rx, ry = 39.0, 11.0, 28.0, 8.0
-	const angSpeed = 1.1 // radians per second
-	labels := []string{"Go", "DIAG", "no ABAP"}
-	for i, lab := range labels {
-		ang := -ts*angSpeed + float64(i)*(2.0*math.Pi/3.0)
-		col := int(cx + rx*math.Cos(ang))
-		row := int(cy + ry*math.Sin(ang))
-		depth := (math.Sin(ang) + 1.0) / 2.0
-		w := 6 + int(depth*12.0)
-		h := 1 + int(depth*2.0+0.5)
-		scr.ButtonH(row, col, w, h, centre(lab, w-2), fmt.Sprintf("=B%d", i))
-	}
-	scr.Text(int(cy), int(cx)-2, "( o )")
-}
-
-// sceneEqualizer is a row of narrow buttons whose Height rises and falls in a
-// travelling sine wave — the pushbutton Height field driven as a bar chart,
-// so the graphics live in the element's own dimensions, not in drawn glyphs.
-func sceneEqualizer(ts float64, scr *frame.Screen) {
-	const bars, baseRow = 12, 20 // bars stand on baseRow and grow upward
-	for i := 0; i < bars; i++ {
-		amp := (math.Sin(ts*3.0+float64(i)*0.5) + 1.0) / 2.0 // 0..1
-		h := 1 + int(amp*10.0)                               // 1..11 rows tall
-		col := 6 + i*6
-		scr.ButtonH(baseRow-h, col, 4, h, "", fmt.Sprintf("=EQ%d", i))
-	}
-	for c := 4; c < 6+bars*6; c++ {
-		scr.Text(baseRow, c, "-") // a floor the bars stand on
-	}
-}
-
-// sceneSnake walks a marker along a Lissajous path and draws a fading trail
-// behind it — each segment is one label, so the whole snake is a dozen-odd
-// bytes. The two frequencies are not commensurate, so the path never repeats
-// exactly.
-func sceneSnake(ts float64, scr *frame.Screen) {
-	const cx, cy, rx, ry = 39.0, 10.0, 30.0, 8.0
-	const seg = 16
-	for k := 0; k < seg; k++ {
-		tt := ts - float64(k)*0.05
-		col := int(cx + rx*math.Sin(tt*1.7))
-		row := int(cy + ry*math.Sin(tt*2.3))
-		ch := "O"
-		switch {
-		case k > 10:
-			ch = "."
-		case k > 4:
-			ch = "o"
-		}
-		scr.Text(row, col, ch)
-	}
-}
-
-// sceneMatrix drops sparse columns of glyphs down the screen, each column at
-// its own speed and phase, a short trail behind every head — the character
-// grid used lightly (every third column, a five-cell trail) rather than
-// filled edge to edge.
-func sceneMatrix(ts float64, scr *frame.Screen) {
-	const w, h = 78, 20
-	const glyphs = "01<>[]{}=+*/\\ABCDEF$#@abcdef"
-	for x := 0; x < w; x += 3 {
-		speed := 6.0 + float64((x*37)%11)
-		off := float64((x * 13) % 23)
-		head := int(math.Mod(ts*speed+off, float64(h+8)))
-		for t := 0; t < 5; t++ {
-			y := head - t
-			if y < 0 || y >= h {
-				continue
-			}
-			g := glyphs[(x+y*7+int(ts*10.0))%len(glyphs)]
-			scr.Text(1+y, 1+x, string(g))
-		}
-	}
-}
-
-// sceneIcons shows a grid of real SAP icons, drawn by us: each cell is an
-// output field holding the @XX@ token, which a dynpro output field substitutes
-// for the bitmap (a plain label does not — that is why the earlier version
-// printed the tokens as text). The hex id sits under each icon, and a marker
-// sweeps the grid so the scene keeps moving.
-func sceneIcons(ts float64, scr *frame.Screen) {
-	scr.Output(1, 2, 52, "IHDR", "@0S@ SAP icons drawn by Go via output fields", false)
-	const cols, count = 12, 48
-	sweep := int(ts*8.0) % count
-	for code := 0; code < count; code++ {
-		r := 3 + (code/cols)*3
-		c := 4 + (code%cols)*8
-		scr.Output(r, c, 4, fmt.Sprintf("IC%02X", code), fmt.Sprintf("@%02X@", code), false)
-		label := fmt.Sprintf("%02X", code)
-		if code == sweep {
-			label = ">" + label // the sweeping marker
-		}
-		scr.Text(r+1, c, label)
-	}
-}
-
-// ledSceneEffect maps a demo LED scene's name to its effect index (0 plasma,
-// 1 rings, 2 ball), or -1 if the scene is not an LED scene. These scenes render
-// in the list channel via the captured list wrapper, not as a dynpro screen.
-func ledSceneEffect(name string) int {
-	switch name {
-	case "plasma":
-		return 0
-	case "rings":
-		return 1
-	case "ball":
-		return 2
-	}
-	return -1
-}
-
-// ledFallback is what an LED scene draws when the capture has no list frame to
-// wrap — a note instead of the effect.
-func ledFallback(ts float64, scr *frame.Screen) {
-	scr.Text(2, 2, "LED effect needs the capture's list frame")
-}
-
-// sceneStars is the starfield and marquee: the whole grid rewritten each
-// frame. Its scroll and wave phases come from ts, so it moves at a fixed
-// speed and the heavier payload does not change the animation's pace.
-func sceneStars(ts float64, scr *frame.Screen) {
-	const w, h = 78, 18
-	banner := "  OPEN-DIAG-GO-PRO  ***  the whole character grid, redrawn  ***  driven by Go  "
-	off := int(ts * 12.0) // 12 characters a second
-	line := make([]byte, w)
-	for i := 0; i < w; i++ {
-		line[i] = banner[(off+i)%len(banner)]
-	}
-	scr.Text(1, 1, string(line))
-	for x := 0; x < w; x++ {
-		y := h/2 + int(float64(h/2-1)*math.Sin(float64(x)/6.0+ts*2.0))
-		if y >= 0 && y < h {
-			scr.Text(3+y, 1+x, "*")
-		}
-	}
-}
-
 // logonWrap is the captured logon screen kept as a backdrop: all of its items
 // (the real menu bar, the New password status entry, the Information text) plus
 // the index of the fields DYNT_ATOM, so the login scene can swap just the
@@ -1269,7 +1003,7 @@ func loginFieldsScreen(ts float64) *frame.Screen {
 	// and once the fields move the box is meant to be gone.
 	switch {
 	case ts < 6:
-		loginFields(scr, homeTop, homeLeft, 0)
+		demo.LoginFields(scr, homeTop, homeLeft, 0)
 	case ts < 12:
 		f := (ts - 6) / 6 * 4
 		seg := int(f)
@@ -1287,13 +1021,13 @@ func loginFieldsScreen(ts float64) *frame.Screen {
 		default:
 			top = homeTop + (1-fr)*dy
 		}
-		loginFields(scr, int(top), int(left), 0)
+		demo.LoginFields(scr, int(top), int(left), 0)
 	case ts < 18:
-		orbitLogins(scr, (ts-12)*1.4, 1)
+		demo.OrbitLogins(scr, (ts-12)*1.4, 1)
 	case ts < 22:
-		orbitLogins(scr, (ts-12)*1.4, 2)
+		demo.OrbitLogins(scr, (ts-12)*1.4, 2)
 	default:
-		orbitLogins(scr, (ts-12)*1.4, 3)
+		demo.OrbitLogins(scr, (ts-12)*1.4, 3)
 	}
 	return scr
 }
@@ -1353,7 +1087,21 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 			log("demo: list wrapper ready for LED scenes")
 		}
 	}
-	scenes := demoScenes()
+	scenes := demo.Scenes()
+	if demoSceneFilter != "" {
+		only := scenes[:0:0]
+		for _, s := range scenes {
+			if s.Name == demoSceneFilter {
+				only = append(only, s)
+			}
+		}
+		if len(only) > 0 {
+			scenes = only
+			log("demo: filtered to scene %q", demoSceneFilter)
+		} else {
+			log("demo: scene %q not found, playing all", demoSceneFilter)
+		}
+	}
 	def := time.Duration(demoSceneMS) * time.Millisecond
 	if def <= 0 {
 		def = 3 * time.Second
@@ -1362,7 +1110,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	durs := make([]time.Duration, len(scenes))
 	var total time.Duration
 	for i, s := range scenes {
-		d := s.dur
+		d := s.Dur
 		if d <= 0 {
 			d = def
 		}
@@ -1386,16 +1134,16 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		}
 		ts := (pos - acc).Seconds()
 		if idx != lastScene {
-			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach)
+			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach)
 			lastScene = idx
 		}
 		// The LED scenes render in the list channel via the list wrapper. The
 		// effect time is quantised to ~180ms steps, so consecutive 80ms ticks
 		// produce identical frames and the adaptive push (§push) skips them —
 		// the LED runs at its own gentle rate while the dynpro scenes stay fast.
-		if eff := ledSceneEffect(scenes[idx].name); eff >= 0 && haveList {
+		if eff := demo.LEDEffectIndex(scenes[idx].Name); eff >= 0 && haveList {
 			t := float64(int(ts/0.18)) * 0.15
-			mine := diag.EncodeListItems(ledSegmentsEff(eff, t))
+			mine := diag.EncodeListItems(demo.LEDSegmentsEff(eff, t))
 			out := append(append(append([]diag.Item{}, listKeep[:listInsertAt]...), mine...), listKeep[listInsertAt:]...)
 			msg, err := diag.EncodeMessage(listHdr, out, false)
 			if err != nil {
@@ -1407,7 +1155,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		// have one: swap just the fields atom, so the menu bar, the New
 		// password status entry and the Information text are all the genuine
 		// article, and only the fields move.
-		if scenes[idx].name == "login" && haveLogon {
+		if scenes[idx].Name == "login" && haveLogon {
 			out := append([]diag.Item{}, logon.items...)
 			// Still: the captured frame verbatim — the real Information box and
 			// all. Moving: swap the fields for the flying ones (no box) and
@@ -1425,9 +1173,15 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 			return msg
 		}
 		scr := frame.New(27, 120)
-		scenes[idx].draw(ts, scr)
-		if !scenes[idx].bare {
-			scr.Text(24, 1, fmt.Sprintf("scene %d/%d  %-9s  approach: %s", idx+1, len(scenes), scenes[idx].name, scenes[idx].approach))
+		if scenes[idx].Dynpro != nil {
+			scenes[idx].Dynpro(ts, scr)
+		} else {
+			// An LED (list-channel) scene reached here only because the capture
+			// had no list frame to wrap; draw a note instead of panicking.
+			scr.Text(2, 2, "LED effect needs the capture's list frame")
+		}
+		if !scenes[idx].Bare {
+			scr.Text(24, 1, fmt.Sprintf("scene %d/%d  %-9s  approach: %s", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach))
 			scr.Text(25, 1, "F3/Back or close the window to stop")
 		}
 		out := append([]diag.Item{}, base...)
@@ -1734,108 +1488,6 @@ func listPushRenderer(wrap []byte, log func(string, ...any), seg func(n int) []d
 
 func ledRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte {
 	return listPushRenderer(wrap, log, ledSegments)
-}
-
-// ledRamp is the ASCII density ramp, light to dark, made of LETTERS (plus a
-// space and two dots for the lightest steps) — letters give smoother tonal
-// transitions than punctuation. The run's colour is the cell background and the
-// glyph is dark foreground, so a denser letter darkens the cell: a halftone
-// within the hue.
-const ledRamp = " .:iclosnuaewmyqpdbkhOQMWNB"
-
-// ledSpectrum is the vivid list colours ordered as a spectrum.
-var ledSpectrum = []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.ColTotal, diag.ColGroup, diag.ColNegative}
-
-// The LED grid is LOGICAL: ledRows x ledCols cells, each drawn as a bw x bh
-// block of character cells (§ ledSegments), so the display is big and chunky
-// while the run count stays tied to this logical resolution.
-const ledRows, ledCols = 10, 22
-
-var ledEffects = []string{"plasma", "rings", "ball"}
-
-// ledCell is the colour and density glyph for one logical LED, for the current
-// effect. Every effect returns smooth regions so the per-row RLE stays tight.
-func ledCell(lr, lc int, t float64, eff int) (byte, byte) {
-	switch eff {
-	case 1: // concentric rings breathing out from the centre
-		cx, cy := float64(ledCols)/2, float64(ledRows)/2
-		d := math.Hypot(float64(lc)-cx, (float64(lr)-cy)*2)
-		v := (math.Sin(d/2.2-t*2.0) + 1.0) / 2.0
-		gi := clampi(int(v*float64(len(ledSpectrum))), 0, len(ledSpectrum)-1)
-		di := clampi(int(v*float64(len(ledRamp))), 0, len(ledRamp)-1)
-		return ledSpectrum[gi], ledRamp[di]
-	case 2: // a bright ball bouncing on a dark field
-		bx := triangle(t*9.0, ledCols-1)
-		by := triangle(t*5.0, ledRows-1)
-		d := math.Hypot(float64(lc-bx), float64(lr-by)*2)
-		if d < 2.5 {
-			return diag.ColNegative, ledRamp[len(ledRamp)-1] // solid ball
-		}
-		if d < 5.0 {
-			return diag.ColTotal, ledRamp[len(ledRamp)/2] // halo
-		}
-		return diag.ColKey, ledRamp[0] // dark background (space)
-	default: // plasma: hue and luminance from two sine fields
-		fr, fc := float64(lr), float64(lc)
-		hv := (math.Sin(fc/3.0+t) + math.Sin(fr/2.0-t) + math.Sin((fc+fr)/4.0+t*1.3) + 3.0) / 6.0
-		lv := (math.Sin(fc/2.5-t*0.7) + math.Cos(fr/3.0+t*0.9) + 2.0) / 4.0
-		gi := clampi(int(hv*float64(len(ledSpectrum))), 0, len(ledSpectrum)-1)
-		di := clampi(int(lv*float64(len(ledRamp))), 0, len(ledRamp)-1)
-		return ledSpectrum[gi], ledRamp[di]
-	}
-}
-
-func clampi(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-// ledSegments is one frame of the LED display, **run-length encoded per row**:
-// adjacent cells sharing a colour and letter collapse into one list run, so the
-// big grid stays a few segments (the list channel stalls on hundreds). Each
-// logical LED is drawn as a bw x bh character block; the effect cycles every
-// few seconds among plasma, rings and a bouncing ball.
-func ledSegments(n int) []diag.ListSegment {
-	return ledSegmentsEff((n/45)%len(ledEffects), float64(n)*0.15)
-}
-
-// ledSegmentsEff renders one specific effect at time t — used both by the led
-// mode (cycling) and by the demo's LED scenes (a fixed effect per scene).
-func ledSegmentsEff(eff int, t float64) []diag.ListSegment {
-	const bw, bh = 4, 2
-	segs := []diag.ListSegment{
-		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED display: colour + letters (RLE)"),
-	}
-	for lr := 0; lr < ledRows; lr++ {
-		type run struct {
-			startLC, wLC int
-			col, ch      byte
-		}
-		var runs []run
-		for lc := 0; lc < ledCols; lc++ {
-			col, ch := ledCell(lr, lc, t, eff)
-			if k := len(runs) - 1; k >= 0 && runs[k].col == col && runs[k].ch == ch {
-				runs[k].wLC++
-			} else {
-				runs = append(runs, run{lc, 1, col, ch})
-			}
-		}
-		for b := 0; b < bh; b++ {
-			sr := 2 + lr*bh + b
-			for _, rn := range runs {
-				segs = append(segs, diag.ListText(sr, 2+rn.startLC*bw, rn.col,
-					strings.Repeat(string(rn.ch), rn.wLC*bw)))
-			}
-		}
-	}
-	segs = append(segs, diag.ListText(2+ledRows*bh+1, 2, diag.ColNormal,
-		fmt.Sprintf("%s   %dx%d LEDs   F3/Back stops", ledEffects[eff], ledRows, ledCols)))
-	return segs
 }
 
 // staticScreen builds the screen for a static demo mode.
