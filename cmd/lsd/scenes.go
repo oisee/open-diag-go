@@ -20,43 +20,6 @@ import (
 // demoSceneMS is how long each scene runs (wall clock), settable via -scene-ms.
 var demoSceneMS = 3000
 
-// loginFieldsScreen is the login scene inside the real logon backdrop: only the
-// fields move; the menu, status and welcome come from the wrapper.
-func loginFieldsScreen(ts float64) *frame.Screen {
-	const homeTop, homeLeft = 0, 1
-	const dx, dy = 44.0, 11.0
-	scr := frame.New(27, 120)
-	switch {
-	case ts < 6:
-		demo.LoginFields(scr, homeTop, homeLeft, 0)
-	case ts < 12:
-		f := (ts - 6) / 6 * 4
-		seg := int(f)
-		fr := f - float64(seg)
-		top, left := float64(homeTop), float64(homeLeft)
-		switch seg {
-		case 0:
-			left = homeLeft + fr*dx
-		case 1:
-			left = homeLeft + dx
-			top = homeTop + fr*dy
-		case 2:
-			left = homeLeft + (1-fr)*dx
-			top = homeTop + dy
-		default:
-			top = homeTop + (1-fr)*dy
-		}
-		demo.LoginFields(scr, int(top), int(left), 0)
-	case ts < 18:
-		demo.OrbitLogins(scr, (ts-12)*1.4, 1)
-	case ts < 22:
-		demo.OrbitLogins(scr, (ts-12)*1.4, 2)
-	default:
-		demo.OrbitLogins(scr, (ts-12)*1.4, 3)
-	}
-	return scr
-}
-
 // ---- LED list-channel scenes -------------------------------------------------
 
 // ---- the logon backdrop ------------------------------------------------------
@@ -125,7 +88,6 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	h := m.Header
 	h.Compress = 0
 	base := items
-	logon, haveLogon := loadLogonWrap(cap, log)
 
 	var listKeep []diag.Item
 	var listHdr diag.Header
@@ -194,20 +156,6 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 			mine := diag.EncodeListItems(demo.LEDSegmentsEff(eff, t))
 			out := append(append(append([]diag.Item{}, listKeep[:listInsertAt]...), mine...), listKeep[listInsertAt:]...)
 			msg, err := diag.EncodeMessage(listHdr, out, false)
-			if err != nil {
-				return nil
-			}
-			return msg
-		}
-		if scenes[idx].Name == "login" && haveLogon {
-			out := append([]diag.Item{}, logon.items...)
-			if ts >= 6 {
-				out[logon.fieldIdx].Value = loginFieldsScreen(ts).Encode()
-				if logon.welcomeIdx >= 0 {
-					out[logon.welcomeIdx].Value = nil
-				}
-			}
-			msg, err := diag.EncodeMessage(logon.header, out, false)
 			if err != nil {
 				return nil
 			}
