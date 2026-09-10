@@ -35,6 +35,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/oisee/open-rfc-go/ni"
 
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
@@ -236,13 +237,15 @@ type session struct {
 	msg       string
 	hasList   bool // the current screen is a classic list, not a dynpro
 	items     []diag.Item
-	pending   bool           // a PAI is out, its answer not yet drawn
-	logonSeen bool           // the screen on show is the logon screen
-	runOnce   string         // an OK-code to send on the first screen after logon
-	fkeys     map[int]string // function-key -> OK-code bindings (--fkeys)
-	palette   bool           // the command palette overlay is open
-	palLines  []string       // its lines
-	palScroll int            // its scroll offset
+	pending   bool             // a PAI is out, its answer not yet drawn
+	logonSeen bool             // the screen on show is the logon screen
+	runOnce   string           // an OK-code to send on the first screen after logon
+	fkeys     map[int]string   // function-key -> OK-code bindings (--fkeys)
+	palette   bool             // the command palette overlay is open
+	palLines  []string         // its lines
+	palScroll int              // its scroll offset
+	screen    tcell.Screen     // the interactive terminal backend (tcell)
+	prevBtn   tcell.ButtonMask // last mouse button mask, to detect a click
 }
 
 // run connects, sends the hello once, and loops rendering screens until the
@@ -281,17 +284,33 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 	}
 	fmt.Fprintf(os.Stderr, "tui: connected to %s, hello sent (%d bytes); %s\n", addr, len(helloBytes), mode)
 
-	keys := make(chan key, 16)
+	var events chan tcell.Event
 	if s.interactive {
-		raw, err := enterRaw(int(os.Stdin.Fd()))
+		scr, err := tcell.NewScreen()
 		if err != nil {
-			return fmt.Errorf("raw terminal: %w", err)
+			return fmt.Errorf("tcell: %w", err)
 		}
-		defer func() {
-			raw.restore()
-			fmt.Print("\x1b[?25h\r\n")
+		if err := scr.Init(); err != nil {
+			return fmt.Errorf("tcell init: %w", err)
+		}
+		scr.EnableMouse()
+		scr.Clear()
+		s.screen = scr
+		defer scr.Fini()
+		events = make(chan tcell.Event, 32)
+		go func() {
+			for {
+				ev := scr.PollEvent()
+				if ev == nil {
+					return
+				}
+				select {
+				case events <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}()
-		go readKeys(ctx, keys)
 	} else if !s.once {
 		go watchQuit(ctx, cancel)
 	}
@@ -326,25 +345,12 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 		}
 	}()
 
-	// A terminal resize (SIGWINCH) repaints the current screen at the new
-	// size. The channel stays nil when not interactive, so its select arm
-	// never fires.
-	var winch chan os.Signal
-	if s.interactive {
-		winch = make(chan os.Signal, 1)
-		signal.Notify(winch, syscall.SIGWINCH)
-		defer signal.Stop(winch)
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-winch:
-			firstPaint = true // clear fully once at the new size
-			s.redraw()
-		case k := <-keys:
-			if err := s.handleKey(k, cancel); err != nil {
+		case ev := <-events:
+			if err := s.handleTcellEvent(ev, cancel); err != nil {
 				return err
 			}
 		case in := <-frames:
@@ -682,6 +688,10 @@ func (s *session) redraw() {
 // canvas and prints it in colour; plain, it prints the bare grid. Interactive,
 // it also marks the focused field and places the terminal cursor on it.
 func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
+	if s.screen != nil {
+		s.drawTcell(canvas, msgType, msg, note)
+		return
+	}
 	rows, cols := terminalSize()
 	if s.plain {
 		if rows > 1 {
