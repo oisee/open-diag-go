@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"unicode/utf16"
+
 	"github.com/oisee/open-diag-go-pro/pkg/alv"
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
 	"github.com/oisee/vibing-steampunk/pkg/sapcompress"
@@ -36,6 +38,7 @@ func main() {
 	grep := flag.String("grep", "", "show only items whose key contains this")
 	values := flag.Bool("values", false, "print item values (hex and text)")
 	maxVal := flag.Int("max", 48, "bytes of a value to print")
+	src := flag.Bool("src", false, "extract ABAP editor source: RFC_TR.01 (0x08/0x01) frames with SUBTYPE=ABAP_SOURCE, DATABIN LZH decoded as UTF-16LE")
 	ole := flag.Bool("ole", false, "decode RFC_TR (0x08) OLE_FLUSH_CALL frames: SplitRFCTR strings + the inner VERBS/SVARS SAP-LZH streams")
 	flag.Parse()
 	if flag.NArg() != 1 {
@@ -45,6 +48,13 @@ func main() {
 	if *ole {
 		if err := runOLE(flag.Arg(0), *only, *maxVal); err != nil {
 			fmt.Fprintln(os.Stderr, "lens: ole:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *src {
+		if err := runSrc(flag.Arg(0)); err != nil {
+			fmt.Fprintln(os.Stderr, "lens: src:", err)
 			os.Exit(1)
 		}
 		return
@@ -268,6 +278,81 @@ func runOLE(path, only string, maxVal int) error {
 				fmt.Printf("   stream[%d] -> %d bytes [%s]: %s\n", i, len(dec), labelStream(dec), oleText(dec, maxVal))
 			}
 		}
+	}
+	return sc.Err()
+}
+
+// u16le decodes little-endian UTF-16 bytes to a string.
+func u16le(b []byte) string {
+	if len(b)%2 == 1 {
+		b = b[:len(b)-1]
+	}
+	u := make([]uint16, len(b)/2)
+	for i := range u {
+		u[i] = uint16(b[2*i]) | uint16(b[2*i+1])<<8
+	}
+	return string(utf16.Decode(u))
+}
+
+// runSrc extracts ABAP editor source from a capture. On Save, the TextEdit
+// control returns its buffer in a C->S RFC_TR.01 (APPL 0x08/0x01) as a SAPLCNDP
+// data-transfer envelope; the DATABIN value holds one SAP-LZH stream whose
+// decompressed bytes are the source as UTF-16LE, lines delimited by CR. It
+// prints each ABAP_SOURCE buffer it finds.
+func runSrc(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	ci := -1
+	found := 0
+	for sc.Scan() {
+		var l line
+		if json.Unmarshal(sc.Bytes(), &l) != nil || l.Dir != "C->S" {
+			continue
+		}
+		d, err := hex.DecodeString(l.Hex)
+		if err != nil || len(d) == 0 {
+			continue
+		}
+		if _, ok := diag.NIControl(d); ok {
+			continue
+		}
+		ci++
+		m, err := diag.ParseMessage(d, ci == 0 && len(d) > diag.DPHeaderLen)
+		if err != nil {
+			continue
+		}
+		for _, it := range diag.ParseItems(m.Body) {
+			if !(it.Type == diag.ItemAPPL || it.Type == diag.ItemAPPL4) || it.ID != 0x08 || it.SID != 0x01 {
+				continue
+			}
+			if !strings.Contains(string(it.Value), "ABAP_SOURCE") {
+				continue
+			}
+			for _, st := range alv.ExtractLZHStreams(it.Value) {
+				dec, derr := sapcompress.Decompress(st)
+				if derr != nil {
+					continue
+				}
+				txt := u16le(dec)
+				if !strings.Contains(strings.ToUpper(txt), "REPORT") && !strings.Contains(txt, "FUNCTION") && !strings.Contains(txt, "CLASS") {
+					continue
+				}
+				txt = strings.ReplaceAll(strings.ReplaceAll(txt, "\r\n", "\n"), "\r", "\n")
+				fmt.Printf("== ABAP source, C->S #%d (SUBTYPE=ABAP_SOURCE, %d chars):\n", ci, len(txt))
+				for _, ln := range strings.Split(txt, "\n") {
+					fmt.Println(strings.TrimRight(ln, " \x00"))
+				}
+				found++
+			}
+		}
+	}
+	if found == 0 {
+		fmt.Fprintln(os.Stderr, "lens: no ABAP_SOURCE buffer found (source rides C->S Save legs)")
 	}
 	return sc.Err()
 }
