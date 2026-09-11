@@ -38,6 +38,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/oisee/open-rfc-go/ni"
 
+	"github.com/oisee/open-diag-go-pro/pkg/cfw"
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
 	"github.com/oisee/open-diag-go-pro/pkg/tui"
 )
@@ -60,6 +61,7 @@ func main() {
 	interactive := flag.Bool("interactive", false, "read the keyboard: edit fields, Enter/OK-code send a PAI (one logon per run)")
 	dump := flag.String("dump", "", "record every frame both ways to this JSONL file (tap format, for cmd/lens)")
 	run := flag.String("run", "", "an OK-code to send on the first screen after logon, e.g. /nse38 (with --logon)")
+	cfwGen := flag.Bool("cfw", false, "generate RFC_TR.01 control answers with this session's own OLE handles instead of replaying captured ones (the SAPLOLEA experiment)")
 	fkeys := flag.String("fkeys", "", `bind function keys to OK-codes, comma-separated N=CODE, e.g. "8=STRT,3==BACK,12=/n" (F8 fires STRT, F3 fires =BACK, F12 fires /n); a bare CODE gets a leading = as a function code, the screen's GUI status decides what each F-key means`)
 	flag.Parse()
 
@@ -145,6 +147,9 @@ func main() {
 		compress:    *compress,
 		runOnce:     *run,
 		fkeys:       parseFKeys(*fkeys),
+	}
+	if *cfwGen {
+		s.engine = cfw.NewEngine()
 	}
 	if *dump != "" {
 		d, err := newDumper(*dump)
@@ -244,6 +249,7 @@ type session struct {
 	logonSeen bool             // the screen on show is the logon screen
 	runOnce   string           // an OK-code to send on the first screen after logon
 	fkeys     map[int]string   // function-key -> OK-code bindings (--fkeys)
+	engine    *cfw.Engine      // when set, generate control answers instead of replaying
 	palette   bool             // the command palette overlay is open
 	palLines  []string         // its lines
 	palScroll int              // its scroll offset
@@ -440,7 +446,7 @@ func (s *session) handleFrame(payload []byte) (bool, error) {
 		}
 	}
 	if s.loggedOn && len(s.controls) > 0 && hasRFCTR(items, 0x00) {
-		if _, err := s.answerControl(s.counter); err != nil {
+		if _, err := s.answerControl(items, s.counter); err != nil {
 			fmt.Fprintf(os.Stderr, "tui: control answer: %v\n", err)
 		}
 	}

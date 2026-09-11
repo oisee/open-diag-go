@@ -82,17 +82,22 @@ func streamSpan(b []byte, hdr int) (end int, ok bool) {
 }
 
 // compressPool re-compresses a modified value pool into a SAP-LZH stream the
-// kernel accepts: Huffman-only, exact-length, via alv.CompressExact at a target
-// comfortably above the natural size (chunkRFC then re-frames it, so the exact
-// length only has to be reachable, not minimal).
+// kernel accepts: Huffman-only via alv.CompressExact, at a length close to the
+// natural compressed size (NOT padded up — a padded stream is dozens of times
+// too large and the kernel resets the connection). alv.Compress gives the
+// natural-size estimate; CompressExact is then probed up from there to the
+// smallest reachable exact length.
 func compressPool(pool []byte) ([]byte, error) {
-	base := lzhHeaderSize + 1 + len(pool) + len(pool)/8 + 256
-	for extra := 0; extra < len(pool)+4096; extra += 64 {
-		if z, ok := alv.CompressExact(pool, base+extra); ok {
+	est := len(pool)/4 + 64
+	if z0, err := alv.Compress(pool); err == nil {
+		est = len(z0)
+	}
+	for extra := 0; extra < 8192; extra++ {
+		if z, ok := alv.CompressExact(pool, est+extra); ok {
 			return z, nil
 		}
 	}
-	return nil, fmt.Errorf("cfw: could not compress a %d-byte value pool", len(pool))
+	return nil, fmt.Errorf("cfw: could not compress a %d-byte value pool near %d bytes", len(pool), est)
 }
 
 // SpliceValuePool replaces the value-pool stream inside an RFC_TR payload with
