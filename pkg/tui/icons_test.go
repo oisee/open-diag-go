@@ -1,6 +1,11 @@
 package tui
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/oisee/open-diag-go-pro/pkg/diag"
+)
 
 // cellsToString drops the styling and returns the glyphs, for asserting layout.
 func cellsToString(cs []Cell) string {
@@ -42,5 +47,34 @@ func TestExpandIconsMalformed(t *testing.T) {
 	got := cellsToString(expandIcons("@10\\Qno close", Style{}))
 	if got != "@10\\Qno close" {
 		t.Errorf("malformed = %q, want it left literal", got)
+	}
+}
+
+func TestDrawTabBar(t *testing.T) {
+	tabs := []diag.Tab{
+		{Caption: "Attributes", Fcode: "=HD", Active: true},
+		{Caption: "Element list", Fcode: "=FL"},
+		{Caption: "Flow logic", Fcode: "=LS"},
+	}
+	g := NewGrid(3, 80)
+	spans := DrawTabBar(g, tabs, 0)
+	if len(spans) != 3 {
+		t.Fatalf("got %d spans, want 3", len(spans))
+	}
+	line := g.Line(0)
+	for _, cap := range []string{"Attributes", "Element list", "Flow logic"} {
+		if !strings.Contains(line, cap) {
+			t.Errorf("tab bar %q missing %q", line, cap)
+		}
+	}
+	// spans are contiguous and carry the fcodes for hit-testing.
+	if spans[0].Col != 0 || !spans[0].Active || spans[0].Fcode != "=HD" {
+		t.Errorf("span[0] = %+v, want col 0, active, =HD", spans[0])
+	}
+	if spans[1].Col != spans[0].Col+spans[0].Width {
+		t.Errorf("spans not contiguous: %+v %+v", spans[0], spans[1])
+	}
+	if spans[2].Fcode != "=LS" {
+		t.Errorf("span[2].Fcode = %q, want =LS", spans[2].Fcode)
 	}
 }

@@ -39,6 +39,8 @@ type field struct {
 type screenState struct {
 	atoms     []diag.Atom
 	fields    []field
+	tabs      []diag.Tab     // a tabstrip's tabs, if the screen has one
+	tabHits   []tui.TabSpan  // where each tab was last drawn, for click hit-testing
 	orig      map[int]string // input fields: the value the server sent
 	values    map[int]string // input fields: the value now
 	origState map[int]byte   // check/radio: the state the server sent
@@ -48,6 +50,9 @@ type screenState struct {
 	cmd       string
 	inCmd     bool
 }
+
+// tabBarRow is the canvas row the tab bar is drawn on.
+const tabBarRow = 0
 
 // newScreenState reads the screen a frame carries: every DYNT_ATOM's atoms,
 // the controls the user can act on among them, and the server's cursor
@@ -66,6 +71,8 @@ func newScreenState(items []diag.Item) *screenState {
 		case it.Type == diag.ItemAPPL && it.ID == 0x09 && it.SID == 0x0b && len(it.Value) >= 5:
 			curRow = int(binary.BigEndian.Uint16(it.Value[1:]))
 			curCol = int(binary.BigEndian.Uint16(it.Value[3:]))
+		case it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x10:
+			s.tabs = append(s.tabs, diag.ParseTabstrip(it.Value)...)
 		}
 	}
 	for i, a := range s.atoms {
@@ -388,6 +395,9 @@ func (s *screenState) note() string {
 		case fButton:
 			return "Enter/Space presses  Tab moves  ^O OK-code  ^C quit"
 		}
+	}
+	if len(s.tabs) > 0 {
+		return "click a tab to switch  Tab/Shift-Tab fields  Enter send  ^O OK-code  ^C quit"
 	}
 	return "Tab/Shift-Tab fields  Enter send  ^O OK-code  ^C quit"
 }

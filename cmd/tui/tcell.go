@@ -133,6 +133,19 @@ func (s *session) handleMouse(e *tcell.EventMouse) {
 	}
 	x, y := e.Position()
 	cr, cc := y-tui.ChromeRows+1, x // canvas is drawn from screen row 3
+	// A click on the tab bar switches tabs: fire the tab's function code (an
+	// OK-code, which the server acts on).
+	if cr == tabBarRow {
+		for _, t := range s.scr.tabHits {
+			if cc >= t.Col && cc < t.Col+t.Width && t.Fcode != "" && !t.Active {
+				if err := s.sendPAI(t.Fcode, -1); err != nil {
+					s.msgType, s.msg = 'E', "send: "+err.Error()
+				}
+				s.redraw()
+				return
+			}
+		}
+	}
 	for i := range s.scr.fields {
 		f := s.scr.fields[i]
 		if f.row == cr && cc >= f.col && cc < f.col+f.width {

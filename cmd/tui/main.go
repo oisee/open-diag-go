@@ -883,6 +883,7 @@ func (s *session) redraw() {
 		canvas = tui.RenderList(diag.ParseListItems(s.items), rows, cols)
 	} else {
 		canvas = tui.Render(s.scr.overlay(), rows, cols)
+		s.scr.tabHits = tui.DrawTabBar(canvas, s.scr.tabs, tabBarRow)
 	}
 	msgType, msg := s.msgType, s.msg
 	if s.scr.inCmd {

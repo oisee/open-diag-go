@@ -372,6 +372,42 @@ func radioBox(state byte) string {
 	return "( )"
 }
 
+// TabSpan is where one tab of a tabstrip was drawn: its column range on the
+// tab-bar row and the function code it fires when clicked.
+type TabSpan struct {
+	Col, Width int
+	Fcode      string
+	Active     bool
+}
+
+// DrawTabBar draws a tabstrip's tabs as "│ Caption " segments on the given row
+// of the grid — the active tab bold and reversed — and returns each tab's
+// column span so a caller can hit-test a click. A screen's exact tabstrip
+// geometry is not reliably on the wire, so the bar is laid left to right from
+// column 0; it is a faithful list of the tabs and which is active, not a
+// pixel-match of the GUI's placement.
+func DrawTabBar(g *Grid, tabs []diag.Tab, row int) []TabSpan {
+	if len(tabs) == 0 || row < 0 || row >= g.Rows {
+		return nil
+	}
+	var spans []TabSpan
+	col := 0
+	for _, t := range tabs {
+		label := t.Caption
+		seg := "│ " + label + " "
+		st := StyleFrame
+		if t.Active {
+			st = Style{Bold: true, Reverse: true}
+		}
+		g.put(row, col, seg, st)
+		w := len([]rune(seg))
+		spans = append(spans, TabSpan{Col: col, Width: w, Fcode: t.Fcode, Active: t.Active})
+		col += w
+	}
+	g.set(row, col, Cell{'│', StyleFrame})
+	return spans
+}
+
 // Line is one row of the grid as a string, blanks included.
 func (g *Grid) Line(row int) string {
 	if row < 0 || row >= g.Rows {
