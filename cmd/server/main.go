@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
@@ -44,26 +45,28 @@ var animMsgType byte
 var animMsgLoop int
 var demoSceneMS int
 
-// playEntry is one step of a composed show: a scene by name and how long it
-// runs (0 = the default).
-type playEntry struct {
-	name string
-	dur  time.Duration
+// showStep is one step of a composed show: a scene by name, how long it runs
+// (0 = the default) and a time-speed multiplier for its animation (0/1 = as-is).
+type showStep struct {
+	name  string
+	dur   time.Duration
+	speed float64
 }
 
-// demoPlaylist is a composed show (from -playlist); empty plays all scenes.
-var demoPlaylist []playEntry
+// demoShow is the composed show (from -playlist or -show); empty plays all
+// scenes.
+var demoShow []showStep
 
 // parsePlaylist reads "orbit:6,tornado:10,solid" into show steps: each is a
-// scene name and an optional seconds after a colon.
-func parsePlaylist(spec string) []playEntry {
-	var out []playEntry
+// scene name and an optional seconds after a colon (speed defaults to 1).
+func parsePlaylist(spec string) []showStep {
+	var out []showStep
 	for _, part := range strings.Split(spec, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-		e := playEntry{name: part}
+		e := showStep{name: part, speed: 1}
 		if i := strings.IndexByte(part, ':'); i >= 0 {
 			e.name = strings.TrimSpace(part[:i])
 			var sec float64
@@ -76,6 +79,44 @@ func parsePlaylist(spec string) []playEntry {
 		}
 	}
 	return out
+}
+
+// showFile is the JSON compose-file: a timeline of scenes, each with its own
+// length and animation speed. Written by the timeline editor.
+type showFile struct {
+	SceneMS int `json:"sceneMs"`
+	Show    []struct {
+		Scene   string  `json:"scene"`
+		Seconds float64 `json:"seconds"`
+		Speed   float64 `json:"speed"`
+	} `json:"show"`
+}
+
+// loadShow reads a JSON compose-file into show steps.
+func loadShow(path string) ([]showStep, int, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	var sf showFile
+	if err := json.Unmarshal(raw, &sf); err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", path, err)
+	}
+	var out []showStep
+	for _, s := range sf.Show {
+		if s.Scene == "" {
+			continue
+		}
+		e := showStep{name: s.Scene, speed: s.Speed}
+		if e.speed <= 0 {
+			e.speed = 1
+		}
+		if s.Seconds > 0 {
+			e.dur = time.Duration(s.Seconds * float64(time.Second))
+		}
+		out = append(out, e)
+	}
+	return out, sf.SceneMS, nil
 }
 
 // demoSceneFilter, when set, restricts the demo to the one scene of that name,
@@ -162,6 +203,7 @@ func main() {
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene of the demo mode runs, in milliseconds (wall clock, not frames)")
 	scene := flag.String("scene", "", "demo mode: play only this one scene, looping (e.g. fireworks, helix, equalizer, matrix)")
 	playlist := flag.String("playlist", "", "demo mode: compose a show as a comma list of scene[:seconds] entries, played in order and looped, e.g. \"orbit:6,tornado:10,solid:8,fireworks:9\" (seconds default to -scene-ms)")
+	show := flag.String("show", "", "demo mode: load a JSON compose-file (timeline of scenes with seconds and speed) written by the timeline editor; overrides -playlist/-scene")
 	recolor := flag.Bool("recolor", false, "patch the colours of any ALV grid in a replayed frame with our own pattern")
 	recolorId := flag.Bool("recolor-identity", false, "recolor pipeline runs but writes each cell its existing colour (isolates recompression from colour values)")
 	recolorStored := flag.Bool("recolor-stored", false, "compress recoloured ALV blobs with DEFLATE stored blocks instead of dynamic Huffman")
@@ -171,7 +213,19 @@ func main() {
 	capturePath = *capture
 	demoSceneMS = *sceneMS
 	demoSceneFilter = *scene
-	demoPlaylist = parsePlaylist(*playlist)
+	if *show != "" {
+		steps, sms, err := loadShow(*show)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "server: show:", err)
+			os.Exit(1)
+		}
+		demoShow = steps
+		if sms > 0 {
+			demoSceneMS = sms
+		}
+	} else {
+		demoShow = parsePlaylist(*playlist)
+	}
 	recolorOn = *recolor || *recolorId || *recolorPass
 	recolorIdentity = *recolorId
 	recolorPassthrough = *recolorPass
@@ -1098,33 +1152,39 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	for _, s := range scenes {
 		byName[s.Name] = s
 	}
+	speeds := make([]float64, len(scenes)) // per-scene animation-time multiplier
+	for i := range speeds {
+		speeds[i] = 1
+	}
 	switch {
-	case len(demoPlaylist) > 0:
-		// A composed show: play the named scenes in order, each for its entry's
-		// length (or the default), looping the whole list.
-		var show []demo.Scene
+	case len(demoShow) > 0:
+		// A composed show: play the named scenes in order, each for its step's
+		// length and speed, looping the whole list.
+		var sc []demo.Scene
+		var sp []float64
 		var names []string
-		for _, e := range demoPlaylist {
+		for _, e := range demoShow {
 			s, ok := byName[e.name]
 			if !ok {
-				log("demo: playlist scene %q not found, skipped", e.name)
+				log("demo: show scene %q not found, skipped", e.name)
 				continue
 			}
 			if e.dur > 0 {
 				s.Dur, s.DurMul = e.dur, 0
 			}
-			show = append(show, s)
+			sc = append(sc, s)
+			sp = append(sp, e.speed)
 			names = append(names, e.name)
 		}
-		if len(show) > 0 {
-			scenes = show
-			log("demo: playlist of %d scenes: %s", len(show), strings.Join(names, " -> "))
+		if len(sc) > 0 {
+			scenes, speeds = sc, sp
+			log("demo: show of %d scenes: %s", len(sc), strings.Join(names, " -> "))
 		} else {
-			log("demo: playlist had no known scenes, playing all")
+			log("demo: show had no known scenes, playing all")
 		}
 	case demoSceneFilter != "":
 		if s, ok := byName[demoSceneFilter]; ok {
-			scenes = []demo.Scene{s}
+			scenes, speeds = []demo.Scene{s}, []float64{1}
 			log("demo: filtered to scene %q", demoSceneFilter)
 		} else {
 			log("demo: scene %q not found, playing all", demoSceneFilter)
@@ -1170,6 +1230,11 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		// continuous.
 		if len(scenes) == 1 {
 			ts = time.Since(start).Seconds()
+		}
+		// The show step's speed multiplier scales the animation time (not the
+		// scene's wall-clock length): a faster step just animates quicker.
+		if idx < len(speeds) && speeds[idx] > 0 {
+			ts *= speeds[idx]
 		}
 		if idx != lastScene {
 			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach)
