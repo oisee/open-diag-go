@@ -42,6 +42,26 @@ func centre(text string, width int) string { return demo.Centre(text, width) }
 var capturePath string
 var animMsgType byte
 var animMsgLoop int
+var animBeat bool
+
+// beatPattern is one 16-step tracker bar: K a kick, S a snare, H a hat, . a
+// rest. Kept sparse (a four-on-the-floor kick and a backbeat snare) so the GUI
+// can actually sound each beep; densify (add hats) only if it keeps up.
+const beatPattern = "K...S...K...S..."
+
+// beatType maps a pattern step to the status-message type whose GUI sound plays
+// it: kick -> E, snare -> W, hat -> I; a rest is 0 (silent).
+func beatType(c byte) byte {
+	switch c {
+	case 'K':
+		return 'E'
+	case 'S':
+		return 'W'
+	case 'H':
+		return 'I'
+	}
+	return 0
+}
 var demoSceneMS int
 
 // demoSceneFilter, when set, restricts the demo to the one scene of that name,
@@ -124,7 +144,8 @@ func main() {
 	pushFrame := flag.Int("push", 222, "server frame index the pushed counter frames are made from (mode counter)")
 	pushMS := flag.Int("push-ms", 300, "cadence of the pushed frames")
 	msgType := flag.String("msg-type", "E", "status message to trigger a sound under the animation: S, W, E or I (empty = none)")
-	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame)")
+	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame); with -beat it is the frames-per-step (default 2)")
+	beat := flag.Bool("beat", false, "play a rhythmic beat: a 16-step pattern of kick/snare beeps (E/W status sounds) synced to the frame cadence, instead of one repeating beep")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene of the demo mode runs, in milliseconds (wall clock, not frames)")
 	scene := flag.String("scene", "", "demo mode: play only this one scene, looping (e.g. fireworks, helix, equalizer, matrix)")
 	recolor := flag.Bool("recolor", false, "patch the colours of any ALV grid in a replayed frame with our own pattern")
@@ -136,6 +157,7 @@ func main() {
 	capturePath = *capture
 	demoSceneMS = *sceneMS
 	demoSceneFilter = *scene
+	animBeat = *beat
 	recolorOn = *recolor || *recolorId || *recolorPass
 	recolorIdentity = *recolorId
 	recolorPassthrough = *recolorPass
@@ -877,10 +899,28 @@ func jokePopup2(popup []byte) []byte {
 // every animMsgLoop frames) so the GUI plays that type's sound under an
 // animation. The type and loop come from the flags via package state.
 func withSound(items []diag.Item, n int) []diag.Item {
-	if animMsgType == 0 || !(n == 1 || (animMsgLoop > 0 && n%animMsgLoop == 1)) {
+	var t byte
+	if animBeat {
+		// Step sequencer: one pattern step every fps frames, its first frame
+		// carrying the step's beep. fps sets the tempo (frames per 1/16 step).
+		fps := animMsgLoop
+		if fps <= 0 {
+			fps = 2
+		}
+		if n%fps != 0 {
+			return items
+		}
+		t = beatType(beatPattern[(n/fps)%len(beatPattern)])
+	} else {
+		if animMsgType == 0 || !(n == 1 || (animMsgLoop > 0 && n%animMsgLoop == 1)) {
+			return items
+		}
+		t = animMsgType
+	}
+	if t == 0 {
 		return items
 	}
-	msg := diag.StatusMessage(animMsgType, "odgp: now playing")
+	msg := diag.StatusMessage(t, "odgp: now playing")
 	out := make([]diag.Item, 0, len(items)+1)
 	for _, it := range items {
 		if it.Type == diag.ItemEOM {
