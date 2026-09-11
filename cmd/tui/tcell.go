@@ -66,8 +66,14 @@ func tcellKey(e *tcell.EventKey) (key, bool) {
 	case tcell.KeyDown:
 		return key{kind: keyDown}, true
 	case tcell.KeyHome:
+		if e.Modifiers()&tcell.ModCtrl != 0 {
+			return key{kind: keyCtrlHome}, true
+		}
 		return key{kind: keyHome}, true
 	case tcell.KeyEnd:
+		if e.Modifiers()&tcell.ModCtrl != 0 {
+			return key{kind: keyCtrlEnd}, true
+		}
 		return key{kind: keyEnd}, true
 	case tcell.KeyPgUp:
 		return key{kind: keyPgUp}, true

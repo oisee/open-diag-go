@@ -19,6 +19,8 @@ const (
 	keyDown
 	keyHome
 	keyEnd
+	keyCtrlHome
+	keyCtrlEnd
 	keyPgUp
 	keyPgDn
 	keyEsc

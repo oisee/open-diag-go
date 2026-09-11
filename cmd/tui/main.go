@@ -545,6 +545,18 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 		s.redraw()
 		return nil
 	}
+	// On a classic-list screen the paging keys scroll via the standard ABAP
+	// list commands (P+ next, P- previous, P++ last, P-- first).
+	if s.hasList {
+		scroll := map[keyKind]string{keyPgDn: "P+", keyPgUp: "P-", keyCtrlEnd: "P++", keyCtrlHome: "P--"}
+		if code := scroll[k.kind]; code != "" {
+			if err := s.sendPAI(code); err != nil {
+				s.msgType, s.msg = 'E', "send: "+err.Error()
+			}
+			s.redraw()
+			return nil
+		}
+	}
 	if k.kind == keyFunc {
 		code, ok := s.fkeys[k.n]
 		if !ok {
