@@ -1180,11 +1180,11 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		// Sound: a scene with events (a firework burst) drives its own beeps
 		// off the frame's time span; otherwise fall back to the beat / single
 		// beep. Event audio is natural and sparse — it marks what happened.
-		if sfn := scenes[idx].Sound; sfn != nil {
+		if sfn := scenes[idx].Sound; sfn != nil && animMsgType != 0 {
 			if t := sfn(prevTs, ts); t != 0 {
 				out = insertStatus(out, t)
 			}
-		} else {
+		} else if scenes[idx].Sound == nil {
 			out = withSound(out, n)
 		}
 		prevTs = ts
