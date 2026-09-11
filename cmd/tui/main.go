@@ -376,6 +376,24 @@ type session struct {
 	prevBtn   tcell.ButtonMask // last mouse button mask, to detect a click
 }
 
+// redirectStderr routes stderr to a temp log file so the "tui: …" diagnostics
+// do not scroll the drawn screen, and returns a cleanup that restores it and
+// prints the log's path. A failure to open the log leaves stderr as it was.
+func redirectStderr(label string) func() {
+	logf, err := os.CreateTemp("", "odgp-tui-*.log")
+	if err != nil {
+		return func() {}
+	}
+	fmt.Fprintf(os.Stderr, "tui: %s; diagnostics -> %s\n", label, logf.Name())
+	orig := os.Stderr
+	os.Stderr = logf
+	return func() {
+		os.Stderr = orig
+		logf.Close()
+		fmt.Fprintf(os.Stderr, "tui: session log at %s\n", logf.Name())
+	}
+}
+
 // run connects, sends the hello once, and loops rendering screens until the
 // connection closes, the context is cancelled, or (with once) the first
 // screen is drawn. Interactive, it also reads the keyboard and answers
@@ -416,19 +434,8 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 	if s.interactive {
 		// tcell owns the terminal now. Our fmt.Fprintf(os.Stderr, "tui: …")
 		// diagnostics share that terminal (fd 2) and would corrupt the drawn
-		// screen — the doubled menu/status bars — so route stderr to a log
-		// file for the life of the session and restore it on exit.
-		logf, lerr := os.CreateTemp("", "odgp-tui-*.log")
-		if lerr == nil {
-			fmt.Fprintf(os.Stderr, "tui: interactive; diagnostics -> %s\n", logf.Name())
-			orig := os.Stderr
-			os.Stderr = logf
-			defer func() {
-				os.Stderr = orig
-				logf.Close()
-				fmt.Fprintf(os.Stderr, "tui: session log at %s\n", logf.Name())
-			}()
-		}
+		// screen, so route stderr to a log file for the session.
+		defer redirectStderr("interactive")()
 		scr, err := tcell.NewScreen()
 		if err != nil {
 			return fmt.Errorf("tcell: %w", err)
@@ -454,8 +461,17 @@ func (s *session) run(parent context.Context, addr string, helloBytes []byte) er
 				}
 			}
 		}()
-	} else if !s.once {
-		go watchQuit(ctx, cancel)
+	} else {
+		// Read-only chrome mode also draws over the whole terminal, so the same
+		// stderr diagnostics (the accelerator-table line and the rest) would
+		// scroll the drawn screen up — route them to a log too. Plain mode is a
+		// scrolling text view where that does not matter.
+		if !s.plain && !s.once {
+			defer redirectStderr("read-only")()
+		}
+		if !s.once {
+			go watchQuit(ctx, cancel)
+		}
 	}
 
 	// The socket is read on its own goroutine; frames and keys meet here.

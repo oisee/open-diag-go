@@ -59,10 +59,21 @@ var iconDefault = icon{'▣', Style{Fg: 240}}
 // uses — the tooltip is display-only and dropped, the visible caption follows
 // the closing `@`. XX is two alphanumeric code characters.
 func iconAt(s []rune, i int) (icon, int, bool) {
-	if i+4 > len(s) || s[i] != '@' {
+	if i+3 > len(s) || s[i] != '@' {
 		return icon{}, 0, false
 	}
-	if !isIconChar(s[i+1]) || !isIconChar(s[i+2]) {
+	// An icon-less quickinfo `@\Qtooltip@caption`: a tooltip on a plain label
+	// with no icon before it. Drop the whole `@\Q…@` (zero glyph, no cell) and
+	// keep the caption after it.
+	if s[i+1] == '\\' && s[i+2] == 'Q' {
+		for j := i + 3; j < len(s); j++ {
+			if s[j] == '@' {
+				return icon{}, j - i + 1, true
+			}
+		}
+		return icon{}, 0, false
+	}
+	if i+4 > len(s) || !isIconChar(s[i+1]) || !isIconChar(s[i+2]) {
 		return icon{}, 0, false
 	}
 	code := strings.ToUpper(string(s[i+1 : i+3]))
@@ -95,9 +106,11 @@ func expandIcons(text string, base Style) []Cell {
 	out := make([]Cell, 0, len(rs))
 	for i := 0; i < len(rs); {
 		if ic, n, ok := iconAt(rs, i); ok {
-			st := base
-			st.Fg = ic.style.Fg
-			out = append(out, Cell{ic.glyph, st}, Cell{' ', base})
+			if ic.glyph != 0 { // a zero glyph is an icon-less quickinfo: drop it
+				st := base
+				st.Fg = ic.style.Fg
+				out = append(out, Cell{ic.glyph, st}, Cell{' ', base})
+			}
 			i += n
 			continue
 		}

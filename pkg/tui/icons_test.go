@@ -78,3 +78,12 @@ func TestDrawTabBar(t *testing.T) {
 		t.Errorf("span[2].Fcode = %q, want =LS", spans[2].Fcode)
 	}
 }
+
+func TestExpandIconsQuickinfoNoIcon(t *testing.T) {
+	// A plain label with a quickinfo but no icon: @\Qtooltip@caption. The
+	// tooltip is dropped, the caption kept, no glyph drawn.
+	got := cellsToString(expandIcons("@\\QUp to 40 characters@Password", Style{}))
+	if got != "Password" {
+		t.Errorf("quickinfo-only = %q, want %q", got, "Password")
+	}
+}
