@@ -44,6 +44,8 @@ func Scenes() []Scene {
 		{Name: "login", Approach: "a login form that sits, drifts a square, orbits, then multiplies", Dur: 26 * time.Second, Bare: true, Dynpro: sceneLogin},
 		{Name: "orbit", Approach: "3 widgets moved by coordinate, sized by depth", Dynpro: sceneOrbit},
 		{Name: "cube", Approach: "a wireframe cube spinning on two axes, near vertices bright — few objects, like orbit", Dynpro: sceneCube},
+		{Name: "tetra", Approach: "a wireframe tetrahedron tumbling fast", Dynpro: sceneTetra},
+		{Name: "octa", Approach: "a wireframe octahedron spinning fast", Dynpro: sceneOcta},
 		{Name: "equalizer", Approach: "a row of buttons whose Height is the graphics — bars", Dynpro: sceneEqualizer},
 		{Name: "snake", Approach: "a label snake on a Lissajous path, with a fading trail", Dynpro: sceneSnake},
 		{Name: "matrix", Approach: "sparse falling columns — the grid used lightly", Dynpro: sceneMatrix},
@@ -52,9 +54,6 @@ func Scenes() []Scene {
 		{Name: "plasma", Approach: "LED plasma in the list channel — colour + letters", List: led(0)},
 		{Name: "rings", Approach: "LED rings in the list channel", List: led(1)},
 		{Name: "ball", Approach: "a bright ball bouncing on the LED field", List: led(2)},
-		{Name: "neoncity", Approach: "a parallax neon skyline in the LED channel — depth + lit windows", List: led(3)},
-		{Name: "mountains", Approach: "parallax mountain ranges in the LED channel — sine ridges, bright crests", List: led(4)},
-		{Name: "doom", Approach: "a first-person raycast corridor in the LED channel — walls by distance", List: led(5)},
 		{Name: "starfield", Approach: "the whole character grid redrawn every frame", Dynpro: sceneStars},
 		{Name: "icons", Approach: "a grid of real SAP icons, drawn via output fields", Dynpro: sceneIcons},
 	}
@@ -70,12 +69,6 @@ func LEDEffectIndex(name string) int {
 		return 1
 	case "ball":
 		return 2
-	case "neoncity":
-		return 3
-	case "mountains":
-		return 4
-	case "doom":
-		return 5
 	}
 	return -1
 }
@@ -211,25 +204,19 @@ func sceneOrbit(ts float64, scr *frame.Screen) {
 	scr.Text(int(cy), int(cx)-2, "( o )")
 }
 
-// sceneCube spins a wireframe cube: 8 vertices rotated on two axes and
-// projected in perspective, the near vertices bright and the far ones dim, the
-// 12 edges sampled as sparse dots. Few objects (like orbit) so the frame stays
-// light and the motion stays smooth on a real GUI.
-func sceneCube(ts float64, scr *frame.Screen) {
-	verts := [8][3]float64{
-		{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
-		{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1},
-	}
-	edges := [12][2]int{
-		{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4},
-		{0, 4}, {1, 5}, {2, 6}, {3, 7},
-	}
-	rx, ry := ts*0.7, ts*1.0
+// spinWireframe rotates a solid's vertices on two axes, projects them in
+// perspective, draws the edges as sparse dots and the vertices as glyphs — near
+// vertices bright (O), far dim (o). Few objects (like orbit) so the frame stays
+// light and the shape can spin fast without overrunning a real GUI. scale sizes
+// the solid; sx/sy are the per-axis spin rates.
+func spinWireframe(scr *frame.Screen, ts float64, verts [][3]float64, edges [][2]int, scale, sx, sy float64) {
 	const cx, cy, d = 59.0, 12.0, 3.2
-	var px, py [8]int
-	var pz [8]float64
+	rx, ry := ts*sx, ts*sy
+	px := make([]int, len(verts))
+	py := make([]int, len(verts))
+	pz := make([]float64, len(verts))
 	for i, v := range verts {
-		x, y, z := v[0], v[1], v[2]
+		x, y, z := v[0]*scale, v[1]*scale, v[2]*scale
 		x, z = x*math.Cos(ry)-z*math.Sin(ry), x*math.Sin(ry)+z*math.Cos(ry) // yaw
 		y, z = y*math.Cos(rx)-z*math.Sin(rx), y*math.Sin(rx)+z*math.Cos(rx) // pitch
 		p := d / (z + d)
@@ -244,7 +231,7 @@ func sceneCube(ts float64, scr *frame.Screen) {
 			scr.Text(py[a]+int(float64(py[b]-py[a])*f), px[a]+int(float64(px[b]-px[a])*f), "·")
 		}
 	}
-	for i := range verts { // vertices: bright near, dim far
+	for i := range verts {
 		ch := "o"
 		if pz[i] < 0 {
 			ch = "O"
@@ -252,6 +239,26 @@ func sceneCube(ts float64, scr *frame.Screen) {
 		scr.Text(py[i], px[i], ch)
 	}
 }
+
+// The wireframe solids: vertices and the edges that join them.
+var (
+	cubeVerts = [][3]float64{
+		{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
+		{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1},
+	}
+	cubeEdges = [][2]int{
+		{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4},
+		{0, 4}, {1, 5}, {2, 6}, {3, 7},
+	}
+	tetraVerts = [][3]float64{{1, 1, 1}, {1, -1, -1}, {-1, 1, -1}, {-1, -1, 1}}
+	tetraEdges = [][2]int{{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}}
+	octaVerts  = [][3]float64{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}
+	octaEdges  = [][2]int{{0, 2}, {0, 3}, {0, 4}, {0, 5}, {1, 2}, {1, 3}, {1, 4}, {1, 5}, {2, 4}, {2, 5}, {3, 4}, {3, 5}}
+)
+
+func sceneCube(ts float64, scr *frame.Screen)  { spinWireframe(scr, ts, cubeVerts, cubeEdges, 1.0, 0.9, 1.3) }
+func sceneTetra(ts float64, scr *frame.Screen) { spinWireframe(scr, ts, tetraVerts, tetraEdges, 1.3, 1.4, 1.8) }
+func sceneOcta(ts float64, scr *frame.Screen)  { spinWireframe(scr, ts, octaVerts, octaEdges, 1.6, 1.7, 1.1) }
 
 func sceneEqualizer(ts float64, scr *frame.Screen) {
 	const bars, baseRow = 12, 20
