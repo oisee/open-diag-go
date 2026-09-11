@@ -54,6 +54,7 @@ func Scenes() []Scene {
 		{Name: "ball", Approach: "a bright ball bouncing on the LED field", List: led(2)},
 		{Name: "neoncity", Approach: "a parallax neon skyline in the LED channel — depth + lit windows", List: led(3)},
 		{Name: "mountains", Approach: "parallax mountain ranges in the LED channel — sine ridges, bright crests", List: led(4)},
+		{Name: "doom", Approach: "a first-person raycast corridor in the LED channel — walls by distance", List: led(5)},
 		{Name: "starfield", Approach: "the whole character grid redrawn every frame", Dynpro: sceneStars},
 		{Name: "icons", Approach: "a grid of real SAP icons, drawn via output fields", Dynpro: sceneIcons},
 	}
@@ -73,6 +74,8 @@ func LEDEffectIndex(name string) int {
 		return 3
 	case "mountains":
 		return 4
+	case "doom":
+		return 5
 	}
 	return -1
 }

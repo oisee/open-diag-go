@@ -26,7 +26,77 @@ var ledSpectrum = []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.Co
 const LEDRows, LEDCols = 10, 22
 
 // ledEffectNames names the effects, indexed by effect number.
-var ledEffectNames = []string{"plasma", "rings", "ball", "neoncity", "mountains"}
+var ledEffectNames = []string{"plasma", "rings", "ball", "neoncity", "mountains", "doom"}
+
+// doomMap is a tiny walled maze the raycaster walks through (1 = wall).
+var doomMap = [][]byte{
+	{1, 1, 1, 1, 1, 1, 1, 1},
+	{1, 0, 0, 0, 0, 0, 0, 1},
+	{1, 0, 1, 1, 0, 1, 0, 1},
+	{1, 0, 0, 0, 0, 0, 0, 1},
+	{1, 0, 1, 0, 1, 1, 0, 1},
+	{1, 0, 0, 0, 0, 0, 0, 1},
+	{1, 0, 0, 1, 0, 0, 0, 1},
+	{1, 1, 1, 1, 1, 1, 1, 1},
+}
+
+// castRay steps a ray from (px,py) at angle ang through doomMap and returns the
+// distance to the first wall and which side was hit (0 or 1, for shading).
+func castRay(px, py, ang float64) (float64, int) {
+	dx, dy := math.Cos(ang), math.Sin(ang)
+	for s := 0.05; s < 12; s += 0.06 {
+		x, y := px+dx*s, py+dy*s
+		mx, my := int(x), int(y)
+		if my < 0 || my >= len(doomMap) || mx < 0 || mx >= len(doomMap[0]) {
+			return s, 0
+		}
+		if doomMap[my][mx] == 1 {
+			side := 0
+			if math.Abs(x-math.Round(x)) > math.Abs(y-math.Round(y)) {
+				side = 1
+			}
+			return s, side
+		}
+	}
+	return 12, 0
+}
+
+// doomCell renders one raycast LED: the camera circles the maze while turning,
+// and each column casts a ray whose wall slice is tall and bright up close,
+// short and dim far away — a first-person 3D corridor from a few dozen rays.
+func doomCell(lr, lc int, t float64) (byte, byte) {
+	// Walk an open corridor (map row 3 is clear, cols 1..6) and keep turning,
+	// so walls sweep past without the camera ever ending up inside a wall.
+	px := 3.5 + math.Sin(t*0.4)*1.3
+	py := 3.5
+	dir := t*0.6
+	const fov = 0.9
+	ang := dir + (float64(lc)/float64(LEDCols)-0.5)*fov
+	dist, side := castRay(px, py, ang)
+	wallH := int(float64(LEDRows) / (dist*0.5 + 0.35))
+	if wallH > LEDRows {
+		wallH = LEDRows
+	}
+	top := (LEDRows - wallH) / 2
+	bot := top + wallH
+	switch {
+	case lr < top: // ceiling
+		return diag.ColKey, ledRamp[1]
+	case lr >= bot: // floor
+		return diag.ColGroup, ledRamp[2]
+	default: // wall: brighter and denser the closer it is; darker on side 1
+		lit := 1.0 - dist/12
+		di := Clampi(int(lit*float64(len(ledRamp))), 3, len(ledRamp)-1)
+		var col byte = diag.ColNegative
+		if side == 1 {
+			col = diag.ColTotal
+		}
+		if dist > 6 {
+			col = diag.ColHeading
+		}
+		return col, ledRamp[di]
+	}
+}
 
 // mountainCell renders one Mountains LED: parallax ridge lines — a far range
 // (high, light, slow) behind a near range (low, dark, fast) — each a sum of
@@ -110,6 +180,8 @@ func ledCell(lr, lc int, t float64, eff int) (byte, byte) {
 		return cityCell(lr, lc, t)
 	case 4: // mountains: parallax ridge lines with bright crests
 		return mountainCell(lr, lc, t)
+	case 5: // doom: a first-person raycast corridor
+		return doomCell(lr, lc, t)
 	case 1: // concentric rings breathing out from the centre
 		cx, cy := float64(LEDCols)/2, float64(LEDRows)/2
 		d := math.Hypot(float64(lc)-cx, (float64(lr)-cy)*2)
