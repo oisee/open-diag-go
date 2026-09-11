@@ -84,3 +84,18 @@ func TestFKeyStep(t *testing.T) {
 		}
 	}
 }
+
+func TestStripMarkup(t *testing.T) {
+	cases := map[string]string{
+		"@10\\QDisplay@ Display": "Display", // icon+tooltip form, trailing caption
+		"@0Y@ Create":           "Create",   // bare icon
+		"Change":                "Change",    // no markup
+		"  Display  ":           "Display",   // trimmed
+		"@6C@":                  "",          // icon only
+	}
+	for in, want := range cases {
+		if got := stripMarkup(in); got != want {
+			t.Errorf("stripMarkup(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

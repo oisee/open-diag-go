@@ -200,6 +200,59 @@ func parseFKeys(spec string) map[int]string {
 	return m
 }
 
+// statusItems returns the MNUENTRY items of a frame (the GUI status: menu bar,
+// menus, toolbar, function keys), or nil when the frame carries none.
+func statusItems(items []diag.Item) []diag.Item {
+	var out []diag.Item
+	for _, it := range items {
+		if it.Type == diag.ItemAPPL4 && it.ID == 0x0b {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// stripMarkup removes SAP icon tokens (@XX@ and @XX\Qtooltip@) from a caption
+// and trims it, so a pushbutton's visible label can be matched by name.
+func stripMarkup(s string) string {
+	for {
+		i := strings.IndexByte(s, '@')
+		if i < 0 {
+			break
+		}
+		j := strings.IndexByte(s[i+1:], '@')
+		if j < 0 {
+			break
+		}
+		s = s[:i] + s[i+1+j+1:]
+	}
+	return strings.TrimSpace(s)
+}
+
+// okCodeForFKey resolves function key n to an OK-code string by joining the
+// screen's accelerator table (key -> function number) and the GUI status
+// (number -> label) with an on-screen pushbutton of that label (label ->
+// function code). Coverage is partial by nature: only functions that have a
+// labelled pushbutton on the current screen carry their code on the wire (the
+// GUI status has numbers and labels but no code strings), so a toolbar-only
+// function like Execute is not resolvable this way and needs --fkeys.
+func (s *session) okCodeForFKey(n int) (string, bool) {
+	fn, ok := s.fkeyFuncs[n]
+	if !ok || s.scr == nil {
+		return "", false
+	}
+	label := diag.FunctionLabels(s.statusItems)[fn]
+	if label == "" {
+		return "", false
+	}
+	for _, a := range s.scr.atoms {
+		if a.EType == diag.AtomPushbutton && a.Function != "" && stripMarkup(a.Value()) == label {
+			return a.Function, true
+		}
+	}
+	return "", false
+}
+
 // splitSteps parses a --script string ("/nse38;F8") into trimmed steps,
 // dropping empties.
 func splitSteps(spec string) []string {
@@ -217,14 +270,15 @@ func splitSteps(spec string) []string {
 // anything else is sent as an OK-code.
 func (s *session) sendStep(step string) error {
 	if n, ok := fkeyStep(step); ok {
-		fn, bound := s.fkeyFuncs[n]
+		code, bound := s.fkeys[n]
 		if !bound {
-			return fmt.Errorf("F%d is not bound on this screen", n)
+			code, bound = s.okCodeForFKey(n)
 		}
-		if lbl := diag.FunctionLabels(s.items)[fn]; lbl != "" {
-			fmt.Fprintf(os.Stderr, "tui: script F%d -> %s (fn#%d)\n", n, lbl, fn)
+		if !bound {
+			return fmt.Errorf("F%d has no resolvable code on this screen (bind it with --fkeys %d=CODE)", n, n)
 		}
-		return s.sendPAI("", fn)
+		fmt.Fprintf(os.Stderr, "tui: script F%d -> OK-code %q\n", n, code)
+		return s.sendPAI(code, -1)
 	}
 	fmt.Fprintf(os.Stderr, "tui: script OK-code %q\n", step)
 	return s.sendPAI(step, -1)
@@ -294,8 +348,9 @@ type session struct {
 	pending   bool             // a PAI is out, its answer not yet drawn
 	logonSeen bool             // the screen on show is the logon screen
 	runOnce   string           // an OK-code to send on the first screen after logon
-	steps     []string         // headless script: OK-codes / F-keys, one per response (--script)
-	scripted  bool             // play steps without a terminal
+	steps       []string       // headless script: OK-codes / F-keys, one per response (--script)
+	scripted    bool           // play steps without a terminal
+	statusItems []diag.Item    // the last GUI status (MNUENTRY), persisted across frames
 	fkeys      map[int]string   // function-key -> OK-code bindings (--fkeys)
 	fkeyFuncs  map[int]int      // function-key -> function number, from the accelerator table
 	accelKeys  map[int]string   // function number -> keystroke label, from the accelerator table
@@ -499,6 +554,12 @@ func (s *session) handleFrame(payload []byte) (bool, error) {
 		s.accelKeys = diag.AccelLabels(items)
 		fmt.Fprintf(os.Stderr, "tui: accelerator table: %d F-keys bound (F8->fn#%d)\n", len(fk), fk[8])
 	}
+	// The GUI status (MNUENTRY) arrives on the frame that sets it and persists
+	// across later frames that omit it, so keep the last one for the command
+	// palette and the F-key-to-label join.
+	if st := statusItems(items); len(st) > 0 {
+		s.statusItems = st
+	}
 
 	if s.logon {
 		if err := s.answerLogon(items); err != nil {
@@ -602,7 +663,7 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	if k.kind == keyCtrlP {
 		s.palette = !s.palette
 		if s.palette {
-			s.palLines, s.palScroll = commandList(s.items, s.accelKeys), 0
+			s.palLines, s.palScroll = commandList(s.statusItems, s.accelKeys), 0
 		}
 		s.redraw()
 		return nil
@@ -662,27 +723,34 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	return nil
 }
 
-// fireFKey fires function key n: an explicit --fkeys binding as an OK-code
-// string, else the screen's accelerator table resolves it to its function
-// number (fired through UI_EVENT_SOURCE, as a real GUI does). It sets a status
-// message when the key is not bound.
+// fireFKey fires function key n through the OK-code path, which the server
+// acts on. In priority: an explicit --fkeys binding; else the code of an
+// on-screen pushbutton this key maps to (okCodeForFKey). A function with no
+// resolvable code (e.g. Execute, a toolbar-only function whose code is not on
+// the wire) cannot be auto-fired — the accelerator table's UI_EVENT path needs
+// a live control framework, which our replay-based session does not have — so
+// the user is told to bind it with --fkeys.
 func (s *session) fireFKey(n int) {
-	if code, ok := s.fkeys[n]; ok {
-		if err := s.sendPAI(code, -1); err != nil {
-			s.msgType, s.msg = 'E', "send: "+err.Error()
+	code, ok := s.fkeys[n]
+	if !ok {
+		code, ok = s.okCodeForFKey(n)
+	}
+	if !ok {
+		label := ""
+		if fn, has := s.fkeyFuncs[n]; has {
+			label = diag.FunctionLabels(s.statusItems)[fn]
+		}
+		if label != "" {
+			s.msgType, s.msg = 'W', fmt.Sprintf("F%d (%s) has no code on this screen; bind it with --fkeys %d=CODE", n, label, n)
+		} else {
+			s.msgType, s.msg = 'W', fmt.Sprintf("F%d is not bound on this screen; --fkeys %d=CODE forces one", n, n)
 		}
 		return
 	}
-	if fn, ok := s.fkeyFuncs[n]; ok {
-		if lbl := diag.FunctionLabels(s.items)[fn]; lbl != "" {
-			fmt.Fprintf(os.Stderr, "tui: F%d -> %s (fn#%d)\n", n, lbl, fn)
-		}
-		if err := s.sendPAI("", fn); err != nil {
-			s.msgType, s.msg = 'E', "send: "+err.Error()
-		}
-		return
+	fmt.Fprintf(os.Stderr, "tui: F%d -> OK-code %q\n", n, code)
+	if err := s.sendPAI(code, -1); err != nil {
+		s.msgType, s.msg = 'E', "send: "+err.Error()
 	}
-	s.msgType, s.msg = 'W', fmt.Sprintf("F%d is not bound on this screen; --fkeys %d=CODE forces one", n, n)
 }
 
 // sendPAI answers the screen on show with the user's edits and either an

@@ -139,9 +139,20 @@ func buildPAI(e *envTemplate, in paiInput, compress bool) ([]byte, error) {
 	if err := add(diag.ItemAPPL, 0x0a, 0x01, false); err != nil { // CONTAINER.01
 		return nil, err
 	}
-	if len(in.Changed) > 0 {
+	switch {
+	case len(in.Changed) > 0:
 		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x09, SID: 0x02, Value: diag.EncodeDyntAtoms(in.Changed)})
-	} else {
+	case in.UIEvent >= 0 && in.Cursor != nil:
+		// A function key carries the focused field's current state as a
+		// DYNT_ATOM, the way a real GUI does even when nothing changed. An empty
+		// DYNT.0a here makes the server treat the frame as a passive refresh and
+		// ignore the function. Send the cursor field's atom verbatim (server
+		// flags, current value) — NOT flagged "changed", which the real GUI
+		// reserves for edits and which the server otherwise ignores.
+		cur := *in.Cursor
+		cur.Rest = nil
+		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x09, SID: 0x02, Value: diag.EncodeDyntAtoms([]diag.Atom{cur})})
+	default:
 		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x09, SID: 0x0a})
 	}
 	// A fired function key rides as UI_EVENT_SOURCE after the changed fields
@@ -157,8 +168,14 @@ func buildPAI(e *envTemplate, in paiInput, compress bool) ([]byte, error) {
 		binary.BigEndian.PutUint16(c[7:], uint16(len(in.Cursor.Text)))
 		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x09, SID: 0x0b, Value: c})
 	}
-	if err := add(diag.ItemXML, 0, 0, false); err != nil {
-		return nil, err
+	// A real GUI omits the window-state XML on a function-key frame (it carries
+	// it on Enter/OK-code frames). With UI_EVENT present, a frame that also
+	// carries the XML is taken as a passive state refresh and the function is
+	// ignored, so drop the XML when firing a function key.
+	if in.UIEvent < 0 {
+		if err := add(diag.ItemXML, 0, 0, false); err != nil {
+			return nil, err
+		}
 	}
 	items = append(items, diag.Item{Type: diag.ItemEOM})
 
