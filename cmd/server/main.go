@@ -1093,6 +1093,15 @@ func loadLogonWrap(cap *replay.Capture, log func(string, ...any)) (*logonWrap, b
 	return nil, false
 }
 
+// speedAt is the animation-time multiplier for step i, defaulting to 1 when
+// none was set (or the slice is short).
+func speedAt(speeds []float64, i int) float64 {
+	if i >= 0 && i < len(speeds) && speeds[i] > 0 {
+		return speeds[i]
+	}
+	return 1
+}
+
 // demoRenderer cycles the scenes on a wall clock: each runs demoSceneMS
 // milliseconds, then the next, then back to the first. The renderer ignores
 // the frame counter push hands it and reads the real elapsed time, so the
@@ -1210,6 +1219,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	}
 	var start time.Time
 	lastScene := -1
+	lastName := ""
 	prevTs := 0.0
 	return func(n int) []byte {
 		if start.IsZero() {
@@ -1233,13 +1243,27 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		}
 		// The show step's speed multiplier scales the animation time (not the
 		// scene's wall-clock length): a faster step just animates quicker.
-		if idx < len(speeds) && speeds[idx] > 0 {
-			ts *= speeds[idx]
+		ts *= speedAt(speeds, idx)
+		// Continuity across a run of the same scene: consecutive steps that name
+		// the same scene do not restart its clock. Each earlier same-name step's
+		// animated length (its wall length times its own speed) carries forward,
+		// so a step that only changes a meta-parameter like speed keeps the scene
+		// spinning and just changes its rate — no snap back to the start.
+		if len(scenes) > 1 {
+			for j := idx - 1; j >= 0 && scenes[j].Name == scenes[idx].Name; j-- {
+				ts += durs[j].Seconds() * speedAt(speeds, j)
+			}
 		}
 		if idx != lastScene {
-			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach)
+			// Announce, and reset the sound phase, only when the actual scene
+			// changes; stepping between two steps of the same scene is a seamless
+			// continuation, so the beep phase must not be reset there.
+			if scenes[idx].Name != lastName {
+				log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach)
+				prevTs = ts
+			}
 			lastScene = idx
-			prevTs = ts // no spurious sound event across a scene boundary
+			lastName = scenes[idx].Name
 		}
 		// The LED scenes render in the list channel via the list wrapper. The
 		// effect time is quantised to ~180ms steps, so consecutive 80ms ticks
