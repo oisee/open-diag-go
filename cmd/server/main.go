@@ -44,6 +44,40 @@ var animMsgType byte
 var animMsgLoop int
 var demoSceneMS int
 
+// playEntry is one step of a composed show: a scene by name and how long it
+// runs (0 = the default).
+type playEntry struct {
+	name string
+	dur  time.Duration
+}
+
+// demoPlaylist is a composed show (from -playlist); empty plays all scenes.
+var demoPlaylist []playEntry
+
+// parsePlaylist reads "orbit:6,tornado:10,solid" into show steps: each is a
+// scene name and an optional seconds after a colon.
+func parsePlaylist(spec string) []playEntry {
+	var out []playEntry
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		e := playEntry{name: part}
+		if i := strings.IndexByte(part, ':'); i >= 0 {
+			e.name = strings.TrimSpace(part[:i])
+			var sec float64
+			if _, err := fmt.Sscanf(strings.TrimSpace(part[i+1:]), "%g", &sec); err == nil && sec > 0 {
+				e.dur = time.Duration(sec * float64(time.Second))
+			}
+		}
+		if e.name != "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // demoSceneFilter, when set, restricts the demo to the one scene of that name,
 // looping it — so a single effect can be watched and iterated on in isolation.
 var demoSceneFilter string
@@ -127,6 +161,7 @@ func main() {
 	msgLoop := flag.Int("msg-loop", 0, "re-send the sound every N frames (0 = once, on the first frame)")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene of the demo mode runs, in milliseconds (wall clock, not frames)")
 	scene := flag.String("scene", "", "demo mode: play only this one scene, looping (e.g. fireworks, helix, equalizer, matrix)")
+	playlist := flag.String("playlist", "", "demo mode: compose a show as a comma list of scene[:seconds] entries, played in order and looped, e.g. \"orbit:6,tornado:10,solid:8,fireworks:9\" (seconds default to -scene-ms)")
 	recolor := flag.Bool("recolor", false, "patch the colours of any ALV grid in a replayed frame with our own pattern")
 	recolorId := flag.Bool("recolor-identity", false, "recolor pipeline runs but writes each cell its existing colour (isolates recompression from colour values)")
 	recolorStored := flag.Bool("recolor-stored", false, "compress recoloured ALV blobs with DEFLATE stored blocks instead of dynamic Huffman")
@@ -136,6 +171,7 @@ func main() {
 	capturePath = *capture
 	demoSceneMS = *sceneMS
 	demoSceneFilter = *scene
+	demoPlaylist = parsePlaylist(*playlist)
 	recolorOn = *recolor || *recolorId || *recolorPass
 	recolorIdentity = *recolorId
 	recolorPassthrough = *recolorPass
@@ -1058,15 +1094,37 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		}
 	}
 	scenes := demo.Scenes()
-	if demoSceneFilter != "" {
-		only := scenes[:0:0]
-		for _, s := range scenes {
-			if s.Name == demoSceneFilter {
-				only = append(only, s)
+	byName := map[string]demo.Scene{}
+	for _, s := range scenes {
+		byName[s.Name] = s
+	}
+	switch {
+	case len(demoPlaylist) > 0:
+		// A composed show: play the named scenes in order, each for its entry's
+		// length (or the default), looping the whole list.
+		var show []demo.Scene
+		var names []string
+		for _, e := range demoPlaylist {
+			s, ok := byName[e.name]
+			if !ok {
+				log("demo: playlist scene %q not found, skipped", e.name)
+				continue
 			}
+			if e.dur > 0 {
+				s.Dur, s.DurMul = e.dur, 0
+			}
+			show = append(show, s)
+			names = append(names, e.name)
 		}
-		if len(only) > 0 {
-			scenes = only
+		if len(show) > 0 {
+			scenes = show
+			log("demo: playlist of %d scenes: %s", len(show), strings.Join(names, " -> "))
+		} else {
+			log("demo: playlist had no known scenes, playing all")
+		}
+	case demoSceneFilter != "":
+		if s, ok := byName[demoSceneFilter]; ok {
+			scenes = []demo.Scene{s}
 			log("demo: filtered to scene %q", demoSceneFilter)
 		} else {
 			log("demo: scene %q not found, playing all", demoSceneFilter)
