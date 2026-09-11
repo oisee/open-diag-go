@@ -377,23 +377,53 @@ func sceneOcta(ts float64, scr *frame.Screen)  { spinSolid(scr, ts, octaVerts, o
 // below and the whole column sways, so the widgets spiral like a tornado. Items
 // are drawn back-to-front and the near ones are drawn wider.
 func sceneTornado(ts float64, scr *frame.Screen) {
-	const cx, rows, perRing = 59.0, 17, 2
+	const (
+		cx, centerRow = 59.0, 13.0
+		rows, perRing = 17, 2
+		vAspect       = 0.40 // a character cell is ~2.5x taller than wide
+		camDist       = 120.0
+		tiltMax       = 1.15 // ~66°: the highest the camera pitches up
+	)
 	icons := []string{"@0S@", "@0Y@", "@0Z@", "@10@", "@08@", "@09@", "@0A@"}
 	labels := []string{"Go", "DIAG", "SAP", "no ABAP", "odgp", "R/3"}
+
+	// The camera pitches from a pure side view (tilt 0) up to a high top-side
+	// view and back, period ~20s. So the swirl reads first as widgets running
+	// left-right, then — as the camera rises — as them travelling on perspective
+	// ellipses around the axis, the way you'd see a real vortex from above.
+	tilt := tiltMax * 0.5 * (1 - math.Cos(ts*0.32))
+	sinP, cosP := math.Sin(tilt), math.Cos(tilt)
+
 	type item struct {
 		row, col, kind, k int
 		depth             float64
 	}
 	var items []item
 	for r := 0; r < rows; r++ {
-		hf := float64(r) / float64(rows)             // 0 top .. 1 bottom
-		radius := 6.0 + (1-hf)*34.0                  // wide at top, tight at the base
-		sway := math.Sin(ts*2.6+float64(r)*0.4) * 7  // the column leans and whips
-		base := ts*4.8 + float64(r)*0.75             // higher rows twist further
+		hf := float64(r) / float64(rows)            // 0 top .. 1 bottom
+		radius := 6.0 + (1-hf)*30.0                 // wide at top, tight at the base
+		sway := math.Sin(ts*2.6+float64(r)*0.4) * 6 // the column leans and whips
+		// Increasing angle spins counter-clockwise seen from above — the way a
+		// northern-hemisphere cyclone turns.
+		base := ts*4.8 + float64(r)*0.75
+		py := (8.0 - float64(r)) * 2.4 // ring height on the axis: top +, base -
 		for k := 0; k < perRing; k++ {
 			a := base + float64(k)*math.Pi
-			col := Clampi(int(cx+sway+radius*math.Cos(a)), 1, 116)
-			items = append(items, item{2 + r, col, (r + k) % 4, r*perRing + k, math.Sin(a)})
+			px := radius * math.Cos(a) // across the ring
+			pz := radius * math.Sin(a) // depth within the ring's own plane
+			// Pitch the whole ring about the horizontal axis by the camera tilt.
+			yUp := py*cosP + pz*sinP
+			zDepth := pz*cosP - py*sinP        // + is toward the viewer
+			p := camDist / (camDist - zDepth)  // perspective: near is bigger
+			col := Clampi(int(cx+sway+px*p), 1, 116)
+			row := Clampi(int(centerRow-yUp*p*vAspect), 1, 25)
+			dN := zDepth / 45.0
+			if dN > 1 {
+				dN = 1
+			} else if dN < -1 {
+				dN = -1
+			}
+			items = append(items, item{row, col, (r + k) % 4, r*perRing + k, dN})
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].depth < items[j].depth }) // back first
@@ -407,8 +437,15 @@ func sceneTornado(ts float64, scr *frame.Screen) {
 			scr.ButtonH(it.row, Clampi(it.col-w/2, 1, 116), w, 1, "", fmt.Sprintf("=T%d", it.k))
 		case 1: // an icon
 			scr.Output(it.row, it.col, 4, fmt.Sprintf("TI%d", it.k), icons[it.k%len(icons)], false)
-		case 2: // an input field
-			scr.Input(it.row, it.col, 5, fmt.Sprintf("TF%d", it.k), "")
+		case 2: // an input field — a white bar whose length grows up close and
+			// shrinks into the distance, so the field width is the graphics. A
+			// sharp specular term flashes it wider right as it swings to the
+			// front (depth -> 1): the white fields become the glints.
+			w := 3 + int((it.depth+1)*3.5) // depth -1..1 -> width 3..10
+			if it.depth > 0 {
+				w += int(math.Pow(it.depth, 6) * 6) // a glint at the near face only
+			}
+			scr.Input(it.row, Clampi(it.col-w/2, 1, 116), w, fmt.Sprintf("TF%d", it.k), "")
 		default: // a label
 			scr.Text(it.row, it.col, labels[it.k%len(labels)])
 		}
