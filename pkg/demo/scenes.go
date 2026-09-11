@@ -323,19 +323,19 @@ func edgeChar(x1, y1, x2, y2 int) string {
 	}
 }
 
-// sceneSolid spins the cube with its corners as depth-scaled BUTTONs — a near
-// corner is a big 4x2 button, a far one a 1x1 dot — and its edges as directional
-// / | \ - glyphs, so the box has weight and depth without the muddy overlap of
-// filled edge-boxes. Vertices are z-sorted so near corners draw last (on top).
-func sceneSolid(ts float64, scr *frame.Screen) {
+// spinSolid rotates a solid and draws its corners as depth-scaled BUTTONs — a
+// near corner a big 7x3 button, a far one a 1x1 dot, z-sorted so near sits on
+// top — with the edges as directional / | \ - glyphs. Weight and depth without
+// the muddy overlap of filled edge-boxes. scale sizes the solid; sx/sy the spin.
+func spinSolid(scr *frame.Screen, ts float64, verts [][3]float64, edges [][2]int, scale, sx, sy float64) {
 	const cx, cy, d = 59.0, 12.0, 3.2
-	rx, ry := ts*0.9, ts*1.3
-	n := len(cubeVerts)
+	rx, ry := ts*sx, ts*sy
+	n := len(verts)
 	px := make([]int, n)
 	py := make([]int, n)
 	pz := make([]float64, n)
-	for i, v := range cubeVerts {
-		x, y, z := v[0], v[1], v[2]
+	for i, v := range verts {
+		x, y, z := v[0]*scale, v[1]*scale, v[2]*scale
 		x, z = x*math.Cos(ry)-z*math.Sin(ry), x*math.Sin(ry)+z*math.Cos(ry)
 		y, z = y*math.Cos(rx)-z*math.Sin(rx), y*math.Sin(rx)+z*math.Cos(rx)
 		p := d / (z + d)
@@ -343,8 +343,7 @@ func sceneSolid(ts float64, scr *frame.Screen) {
 		py[i] = int(cy + y*p*9)
 		pz[i] = z
 	}
-	// edges: sparse directional glyphs between the two corners.
-	for _, e := range cubeEdges {
+	for _, e := range edges { // edges: sparse directional glyphs
 		a, b := e[0], e[1]
 		ch := edgeChar(px[a], py[a], px[b], py[b])
 		for s := 1; s < 6; s++ {
@@ -352,21 +351,24 @@ func sceneSolid(ts float64, scr *frame.Screen) {
 			scr.Text(py[a]+int(float64(py[b]-py[a])*f), px[a]+int(float64(px[b]-px[a])*f), ch)
 		}
 	}
-	// corners: buttons sized by depth, drawn far-to-near so near ones sit on top.
-	order := make([]int, n)
+	order := make([]int, n) // corners: depth-scaled buttons, far-to-near
 	for i := range order {
 		order[i] = i
 	}
 	sort.Slice(order, func(i, j int) bool { return pz[order[i]] > pz[order[j]] })
 	for _, i := range order {
-		depth := Clampi(int((1-(pz[i]+2)/4)*100), 0, 100) // 0 far .. 100 near
-		w := 1 + depth*6/100                              // 1..7
-		h := 1 + depth*2/100                              // 1..3
+		depth := Clampi(int((1-(pz[i]+2)/4)*100), 0, 100)
+		w := 1 + depth*6/100 // 1..7
+		h := 1 + depth*2/100 // 1..3
 		scr.ButtonH(py[i]-h/2, px[i]-w/2, w, h, "", fmt.Sprintf("=S%d", i))
 	}
 }
-func sceneTetra(ts float64, scr *frame.Screen) { spinWireframe(scr, ts, tetraVerts, tetraEdges, 1.3, 1.4, 1.8) }
-func sceneOcta(ts float64, scr *frame.Screen)  { spinWireframe(scr, ts, octaVerts, octaEdges, 1.6, 1.7, 1.1) }
+
+func sceneSolid(ts float64, scr *frame.Screen) {
+	spinSolid(scr, ts, cubeVerts, cubeEdges, 1.0, 0.9, 1.3)
+}
+func sceneTetra(ts float64, scr *frame.Screen) { spinSolid(scr, ts, tetraVerts, tetraEdges, 1.3, 1.4, 1.8) }
+func sceneOcta(ts float64, scr *frame.Screen)  { spinSolid(scr, ts, octaVerts, octaEdges, 1.6, 1.7, 1.1) }
 
 func sceneEqualizer(ts float64, scr *frame.Screen) {
 	const bars, baseRow = 12, 20
