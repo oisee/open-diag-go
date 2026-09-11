@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -61,6 +62,7 @@ func main() {
 	interactive := flag.Bool("interactive", false, "read the keyboard: edit fields, Enter/OK-code send a PAI (one logon per run)")
 	dump := flag.String("dump", "", "record every frame both ways to this JSONL file (tap format, for cmd/lens)")
 	run := flag.String("run", "", "an OK-code to send on the first screen after logon, e.g. /nse38 (with --logon)")
+	script := flag.String("script", "", "headless: after logon, play a ';'-separated sequence of steps, one per server response — an OK-code (/nse38, =BACK) or a function key (F8, F3); builds screen state without a terminal (with --logon, no --interactive)")
 	cfwGen := flag.Bool("cfw", false, "generate RFC_TR.01 control answers with this session's own OLE handles instead of replaying captured ones (the SAPLOLEA experiment)")
 	fkeys := flag.String("fkeys", "", `bind function keys to OK-codes, comma-separated N=CODE, e.g. "8=STRT,3==BACK,12=/n" (F8 fires STRT, F3 fires =BACK, F12 fires /n); a bare CODE gets a leading = as a function code, the screen's GUI status decides what each F-key means`)
 	flag.Parse()
@@ -146,6 +148,8 @@ func main() {
 		controls:    controls,
 		compress:    *compress,
 		runOnce:     *run,
+		steps:       splitSteps(*script),
+		scripted:    *script != "" && !*interactive,
 		fkeys:       parseFKeys(*fkeys),
 	}
 	if *cfwGen {
@@ -194,6 +198,48 @@ func parseFKeys(spec string) map[int]string {
 		m[n] = code
 	}
 	return m
+}
+
+// splitSteps parses a --script string ("/nse38;F8") into trimmed steps,
+// dropping empties.
+func splitSteps(spec string) []string {
+	var out []string
+	for _, p := range strings.Split(spec, ";") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// sendStep plays one script step: "F<n>" fires the function key (resolved to
+// its number through the screen's accelerator table, the way a real GUI does);
+// anything else is sent as an OK-code.
+func (s *session) sendStep(step string) error {
+	if n, ok := fkeyStep(step); ok {
+		fn, bound := s.fkeyFuncs[n]
+		if !bound {
+			return fmt.Errorf("F%d is not bound on this screen", n)
+		}
+		if lbl := diag.FunctionLabels(s.items)[fn]; lbl != "" {
+			fmt.Fprintf(os.Stderr, "tui: script F%d -> %s (fn#%d)\n", n, lbl, fn)
+		}
+		return s.sendPAI("", fn)
+	}
+	fmt.Fprintf(os.Stderr, "tui: script OK-code %q\n", step)
+	return s.sendPAI(step, -1)
+}
+
+// fkeyStep parses a "F8"/"f12" step into its function-key number.
+func fkeyStep(step string) (int, bool) {
+	if len(step) < 2 || (step[0] != 'F' && step[0] != 'f') {
+		return 0, false
+	}
+	n, err := strconv.Atoi(step[1:])
+	if err != nil || n < 1 || n > 24 {
+		return 0, false
+	}
+	return n, true
 }
 
 // resolveCreds gathers logon credentials: from a .mcp.json server when --mcp
@@ -248,6 +294,8 @@ type session struct {
 	pending   bool             // a PAI is out, its answer not yet drawn
 	logonSeen bool             // the screen on show is the logon screen
 	runOnce   string           // an OK-code to send on the first screen after logon
+	steps     []string         // headless script: OK-codes / F-keys, one per response (--script)
+	scripted  bool             // play steps without a terminal
 	fkeys      map[int]string   // function-key -> OK-code bindings (--fkeys)
 	fkeyFuncs  map[int]int      // function-key -> function number, from the accelerator table
 	accelKeys  map[int]string   // function number -> keystroke label, from the accelerator table
@@ -495,14 +543,28 @@ func (s *session) handleFrame(payload []byte) (bool, error) {
 		s.scr = newScreenState(items)
 		s.redraw()
 	} else {
+		// A headless script still needs the screen state to shape a PAI with a
+		// cursor and changed fields (an F-key rides the focused field's cursor).
+		if s.scripted {
+			s.hasList = diag.HasListSegments(items)
+			s.scr = newScreenState(items)
+		}
 		s.draw(canvas, msgType, msg, note)
 	}
 	s.drewOnce = true
-	if s.runOnce != "" && s.loggedOn && !s.logonSeen {
-		cmd := s.runOnce
-		s.runOnce = ""
-		if err := s.sendOKCode(cmd); err != nil {
-			fmt.Fprintf(os.Stderr, "tui: --run %q: %v\n", cmd, err)
+	if s.loggedOn && !s.logonSeen && !s.pending {
+		if s.runOnce != "" {
+			cmd := s.runOnce
+			s.runOnce = ""
+			if err := s.sendOKCode(cmd); err != nil {
+				fmt.Fprintf(os.Stderr, "tui: --run %q: %v\n", cmd, err)
+			}
+		} else if s.scripted && len(s.steps) > 0 {
+			step := s.steps[0]
+			s.steps = s.steps[1:]
+			if err := s.sendStep(step); err != nil {
+				fmt.Fprintf(os.Stderr, "tui: script step %q: %v\n", step, err)
+			}
 		}
 	}
 	return true, nil

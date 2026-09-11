@@ -58,3 +58,29 @@ func TestUIEventSource(t *testing.T) {
 		t.Errorf("no-cursor event = %x, want number at [5], zero position", g0)
 	}
 }
+
+func TestSplitSteps(t *testing.T) {
+	got := splitSteps(" /nse38 ; F8;; =BACK ;")
+	want := []string{"/nse38", "F8", "=BACK"}
+	if len(got) != len(want) {
+		t.Fatalf("splitSteps = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("step %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestFKeyStep(t *testing.T) {
+	for step, want := range map[string]int{"F8": 8, "f12": 12, "F1": 1, "F24": 24} {
+		if n, ok := fkeyStep(step); !ok || n != want {
+			t.Errorf("fkeyStep(%q) = %d,%v, want %d,true", step, n, ok, want)
+		}
+	}
+	for _, step := range []string{"/nse38", "=BACK", "F0", "F25", "F", "FX", ""} {
+		if n, ok := fkeyStep(step); ok {
+			t.Errorf("fkeyStep(%q) = %d,true, want not-an-fkey", step, n)
+		}
+	}
+}
