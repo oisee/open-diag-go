@@ -2,6 +2,7 @@ package cfw
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -164,5 +165,38 @@ func TestDecodeEasyAccessCall(t *testing.T) {
 			t.Errorf("untouched value record %d changed", rec)
 			break
 		}
+	}
+}
+
+// SpliceValuePool round-trips: after filling handles and splicing the pool
+// back, the payload's value-pool stream decodes to the filled pool and the
+// other streams are unchanged.
+func TestSpliceValuePool(t *testing.T) {
+	val := rfctr00(t, "../../captures/probe.jsonl", 6)
+	verbs, desc, values, err := Streams(val)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewEngine()
+	filled, written := e.FillResults(ParseVerbs(verbs), ParseSvarsDesc(desc), values)
+	if len(written) == 0 {
+		t.Fatal("no handles written")
+	}
+	spliced, err := SpliceValuePool(val, filled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2, d2, vals2, err := Streams(spliced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(vals2, filled) {
+		t.Errorf("spliced value pool != filled pool (%d vs %d bytes)", len(vals2), len(filled))
+	}
+	if !bytes.Equal(v2, verbs) {
+		t.Error("verbs stream changed by the splice")
+	}
+	if !bytes.Equal(d2, desc) {
+		t.Error("descriptor stream changed by the splice")
 	}
 }
