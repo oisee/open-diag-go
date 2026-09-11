@@ -299,10 +299,34 @@ var (
 
 func sceneCube(ts float64, scr *frame.Screen)  { spinWireframe(scr, ts, cubeVerts, cubeEdges, 1.0, 0.9, 1.3) }
 
-// sceneSolid spins the cube but draws each edge as a BUTTON whose two opposite
-// corners sit on the edge's two projected vertices — a solid, chunky cube of
-// filled rectangles. The edges are z-sorted so the near ones draw last and
-// cover the far ones (painter's algorithm), which reads as a solid 3D box.
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// edgeChar picks the line glyph for an edge by its screen slope: - flat, |
+// steep, \ and / for the two diagonals.
+func edgeChar(x1, y1, x2, y2 int) string {
+	dx, dy := x2-x1, y2-y1
+	ax, ay := abs(dx), abs(dy)
+	switch {
+	case ay*2 < ax:
+		return "-"
+	case ax*2 < ay:
+		return "|"
+	case (dx > 0) == (dy > 0):
+		return "\\"
+	default:
+		return "/"
+	}
+}
+
+// sceneSolid spins the cube with its corners as depth-scaled BUTTONs — a near
+// corner is a big 4x2 button, a far one a 1x1 dot — and its edges as directional
+// / | \ - glyphs, so the box has weight and depth without the muddy overlap of
+// filled edge-boxes. Vertices are z-sorted so near corners draw last (on top).
 func sceneSolid(ts float64, scr *frame.Screen) {
 	const cx, cy, d = 59.0, 12.0, 3.2
 	rx, ry := ts*0.9, ts*1.3
@@ -319,27 +343,26 @@ func sceneSolid(ts float64, scr *frame.Screen) {
 		py[i] = int(cy + y*p*9)
 		pz[i] = z
 	}
-	type ebtn struct {
-		row, col, w, h int
-		depth          float64
-		fc             string
-	}
-	ebs := make([]ebtn, 0, len(cubeEdges))
-	for j, e := range cubeEdges {
+	// edges: sparse directional glyphs between the two corners.
+	for _, e := range cubeEdges {
 		a, b := e[0], e[1]
-		c0, c1 := px[a], px[b]
-		if c0 > c1 {
-			c0, c1 = c1, c0
+		ch := edgeChar(px[a], py[a], px[b], py[b])
+		for s := 1; s < 6; s++ {
+			f := float64(s) / 6
+			scr.Text(py[a]+int(float64(py[b]-py[a])*f), px[a]+int(float64(px[b]-px[a])*f), ch)
 		}
-		r0, r1 := py[a], py[b]
-		if r0 > r1 {
-			r0, r1 = r1, r0
-		}
-		ebs = append(ebs, ebtn{r0, c0, c1 - c0 + 1, r1 - r0 + 1, (pz[a] + pz[b]) / 2, fmt.Sprintf("=S%d", j)})
 	}
-	sort.Slice(ebs, func(i, k int) bool { return ebs[i].depth > ebs[k].depth }) // far first
-	for _, b := range ebs {
-		scr.ButtonH(b.row, b.col, b.w, b.h, "", b.fc)
+	// corners: buttons sized by depth, drawn far-to-near so near ones sit on top.
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool { return pz[order[i]] > pz[order[j]] })
+	for _, i := range order {
+		depth := Clampi(int((1-(pz[i]+2)/4)*100), 0, 100) // 0 far .. 100 near
+		w := 1 + depth*3/100                              // 1..4
+		h := 1 + depth/100                                // 1..2
+		scr.ButtonH(py[i]-h/2, px[i]-w/2, w, h, "", fmt.Sprintf("=S%d", i))
 	}
 }
 func sceneTetra(ts float64, scr *frame.Screen) { spinWireframe(scr, ts, tetraVerts, tetraEdges, 1.3, 1.4, 1.8) }
