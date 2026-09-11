@@ -72,6 +72,73 @@ func ParseMenuEntries(value []byte) []MenuEntry {
 	return out
 }
 
+// Menu is one dropdown of the menu bar: its title and its top-level items.
+type Menu struct {
+	Title string
+	Num   int
+	Items []MenuItem
+}
+
+// MenuItem is one entry of a dropdown: its caption, the function number it
+// fires (Code; 100 = a menu-only node with no direct function), whether it is
+// a separator, and whether it opens a submenu.
+type MenuItem struct {
+	Text      string
+	Code      int
+	Separator bool
+	HasSub    bool
+}
+
+// ParseMenus builds the menu bar from a frame's GUI status: the titles
+// (MNUENTRY.01) and the dropdown tree (MNUENTRY.02). It returns each menu with
+// its TOP-LEVEL items — the first run of increasing item numbers under that
+// menu; submenu children (which repeat their parent's item number) are marked
+// on the parent via HasSub but not yet expanded.
+func ParseMenus(items []Item) []Menu {
+	var titles, tree []MenuEntry
+	for _, it := range items {
+		if it.Type != ItemAPPL4 || it.ID != 0x0b {
+			continue
+		}
+		switch it.SID {
+		case 0x01:
+			if es := ParseMenuEntries(it.Value); len(es) > len(titles) {
+				titles = es
+			}
+		case 0x02:
+			if es := ParseMenuEntries(it.Value); len(es) > len(tree) {
+				tree = es
+			}
+		}
+	}
+	var menus []Menu
+	for _, t := range titles {
+		if t.Text == "" {
+			continue
+		}
+		m := Menu{Title: t.Text, Num: t.Menu}
+		maxItem, top := 0, true
+		for _, e := range tree {
+			if e.Menu != t.Menu {
+				continue
+			}
+			if top && e.Item > maxItem {
+				maxItem = e.Item
+				m.Items = append(m.Items, MenuItem{
+					Text:      e.Text,
+					Code:      int(e.Code),
+					Separator: e.Separator(),
+					HasSub:    e.Flag&0x04 != 0 && !e.Separator(),
+				})
+			} else if !e.Separator() {
+				top = false // an item number that did not advance starts the submenus
+			}
+		}
+		menus = append(menus, m)
+	}
+	return menus
+}
+
 // FunctionLabels maps a function number to its caption, read from the GUI
 // status: the function-key list (MNUENTRY.04), the toolbar (.03) and the menus
 // (.02) all carry the same numbers as their Code. It lets a client name a fired

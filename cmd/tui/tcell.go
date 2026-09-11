@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/oisee/open-diag-go-pro/pkg/diag"
 	"github.com/oisee/open-diag-go-pro/pkg/tui"
 )
 
@@ -128,10 +129,18 @@ func (s *session) handleMouse(e *tcell.EventMouse) {
 	}
 	click := btn&tcell.Button1 != 0 && s.prevBtn&tcell.Button1 == 0
 	s.prevBtn = btn
-	if !click || s.scr == nil || s.hasList {
+	if !click || s.scr == nil {
 		return
 	}
 	x, y := e.Position()
+	// The menu bar (composed-grid row 1) and its open dropdown take clicks
+	// first, so a click there opens/navigates the menu instead of the canvas.
+	if len(diag.ParseMenus(s.statusItems)) > 0 && s.menuClick(y, x) {
+		return
+	}
+	if s.hasList {
+		return
+	}
 	cr, cc := y-tui.ChromeRows+1, x // canvas is drawn from screen row 3
 	// A click on the tab bar switches tabs: fire the tab's function code (an
 	// OK-code, which the server acts on).
@@ -170,6 +179,10 @@ func (s *session) drawTcell(canvas *tui.Grid, msgType byte, msg, note string) {
 	cr, cc := 0, 0
 	if s.scr != nil && !s.hasList && !s.scr.inCmd {
 		cr, cc = s.scr.markFocus(g, tui.ChromeRows-1)
+	}
+	if s.menuOpen {
+		s.drawMenu(g)
+		cr, cc = 0, 0
 	}
 	if s.palette {
 		s.drawPalette(g)

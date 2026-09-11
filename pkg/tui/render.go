@@ -464,6 +464,11 @@ func (g *Grid) String() string {
 	return b.String()
 }
 
+// PutText writes s at (row, col) in one style, clipped to the grid. It is the
+// exported way for a caller in another package to draw onto the grid (an
+// overlay such as the menu dropdown).
+func (g *Grid) PutText(row, col int, s string, st Style) { g.put(row, col, s, st) }
+
 // Restyle applies f to the style of width cells from (row, col), clipped to
 // the grid. A caller marks keyboard focus with it without redrawing the atom.
 func (g *Grid) Restyle(row, col, width int, f func(Style) Style) {

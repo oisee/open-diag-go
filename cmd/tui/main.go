@@ -245,6 +245,16 @@ func (s *session) okCodeForFKey(n int) (string, bool) {
 	if label == "" {
 		return "", false
 	}
+	return s.fcodeForLabel(label)
+}
+
+// fcodeForLabel returns the function code of an on-screen pushbutton whose
+// visible caption matches label (icon markup stripped), the only place a
+// function's code string is on the wire.
+func (s *session) fcodeForLabel(label string) (string, bool) {
+	if s.scr == nil {
+		return "", false
+	}
 	for _, a := range s.scr.atoms {
 		if a.EType == diag.AtomPushbutton && a.Function != "" && stripMarkup(a.Value()) == label {
 			return a.Function, true
@@ -351,6 +361,10 @@ type session struct {
 	steps       []string       // headless script: OK-codes / F-keys, one per response (--script)
 	scripted    bool           // play steps without a terminal
 	statusItems []diag.Item    // the last GUI status (MNUENTRY), persisted across frames
+	menuOpen    bool           // the menu bar is being navigated
+	menus       []diag.Menu    // the parsed menu tree, while navigating
+	menuIdx     int            // the open menu (index into menus)
+	menuItem    int            // the highlighted item in the open menu
 	fkeys      map[int]string   // function-key -> OK-code bindings (--fkeys)
 	fkeyFuncs  map[int]int      // function-key -> function number, from the accelerator table
 	accelKeys  map[int]string   // function number -> keystroke label, from the accelerator table
@@ -660,6 +674,17 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	// given F-key fires is defined by the screen's GUI status and is not in
 	// the data we can read, so the binding is the user's to state. The screen's
 	// changed fields ride along, as they do for a pushbutton.
+	// The menu bar: F10 opens it, then the arrows walk it. It is client-side
+	// navigation and consumes keys until Enter fires an item or Esc closes.
+	if s.menuOpen {
+		s.menuKey(k, func() { cancel() })
+		return nil
+	}
+	if k.kind == keyFunc && k.n == 10 {
+		s.openMenu()
+		s.redraw()
+		return nil
+	}
 	if k.kind == keyCtrlP {
 		s.palette = !s.palette
 		if s.palette {
@@ -891,7 +916,13 @@ func (s *session) redraw() {
 	} else if s.pending {
 		msgType, msg = 0, "…"
 	}
-	s.draw(canvas, msgType, msg, s.scr.note())
+	note := s.scr.note()
+	if s.menuOpen {
+		note = "←/→ menus  ↑/↓ items  Enter select  Esc close"
+	} else if len(s.statusItems) > 0 {
+		note += "  F10 menu"
+	}
+	s.draw(canvas, msgType, msg, note)
 }
 
 // draw renders the frame. With chrome it composes the GUI window round the
@@ -917,6 +948,10 @@ func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
 	cr, cc := 0, 0
 	if s.interactive && s.scr != nil && !s.hasList && !s.scr.inCmd {
 		cr, cc = s.scr.markFocus(g, 3)
+	}
+	if s.interactive && s.menuOpen {
+		s.drawMenu(g)
+		cr, cc = 0, 0
 	}
 	if s.interactive && s.palette {
 		s.drawPalette(g)
