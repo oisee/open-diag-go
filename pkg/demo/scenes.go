@@ -43,6 +43,7 @@ func Scenes() []Scene {
 	return []Scene{
 		{Name: "login", Approach: "a login form that sits, drifts a square, orbits, then multiplies", Dur: 26 * time.Second, Bare: true, Dynpro: sceneLogin},
 		{Name: "orbit", Approach: "3 widgets moved by coordinate, sized by depth", Dynpro: sceneOrbit},
+		{Name: "cube", Approach: "a wireframe cube spinning on two axes, near vertices bright — few objects, like orbit", Dynpro: sceneCube},
 		{Name: "equalizer", Approach: "a row of buttons whose Height is the graphics — bars", Dynpro: sceneEqualizer},
 		{Name: "snake", Approach: "a label snake on a Lissajous path, with a fading trail", Dynpro: sceneSnake},
 		{Name: "matrix", Approach: "sparse falling columns — the grid used lightly", Dynpro: sceneMatrix},
@@ -205,6 +206,48 @@ func sceneOrbit(ts float64, scr *frame.Screen) {
 		scr.ButtonH(row, col, w, h, Centre(lab, w-2), fmt.Sprintf("=B%d", i))
 	}
 	scr.Text(int(cy), int(cx)-2, "( o )")
+}
+
+// sceneCube spins a wireframe cube: 8 vertices rotated on two axes and
+// projected in perspective, the near vertices bright and the far ones dim, the
+// 12 edges sampled as sparse dots. Few objects (like orbit) so the frame stays
+// light and the motion stays smooth on a real GUI.
+func sceneCube(ts float64, scr *frame.Screen) {
+	verts := [8][3]float64{
+		{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
+		{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1},
+	}
+	edges := [12][2]int{
+		{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4},
+		{0, 4}, {1, 5}, {2, 6}, {3, 7},
+	}
+	rx, ry := ts*0.7, ts*1.0
+	const cx, cy, d = 59.0, 12.0, 3.2
+	var px, py [8]int
+	var pz [8]float64
+	for i, v := range verts {
+		x, y, z := v[0], v[1], v[2]
+		x, z = x*math.Cos(ry)-z*math.Sin(ry), x*math.Sin(ry)+z*math.Cos(ry) // yaw
+		y, z = y*math.Cos(rx)-z*math.Sin(rx), y*math.Sin(rx)+z*math.Cos(rx) // pitch
+		p := d / (z + d)
+		px[i] = int(cx + x*p*20)
+		py[i] = int(cy + y*p*9)
+		pz[i] = z
+	}
+	for _, e := range edges { // edges as sparse dots (few atoms, keeps it light)
+		a, b := e[0], e[1]
+		for s := 1; s < 5; s++ {
+			f := float64(s) / 5
+			scr.Text(py[a]+int(float64(py[b]-py[a])*f), px[a]+int(float64(px[b]-px[a])*f), "·")
+		}
+	}
+	for i := range verts { // vertices: bright near, dim far
+		ch := "o"
+		if pz[i] < 0 {
+			ch = "O"
+		}
+		scr.Text(py[i], px[i], ch)
+	}
 }
 
 func sceneEqualizer(ts float64, scr *frame.Screen) {
