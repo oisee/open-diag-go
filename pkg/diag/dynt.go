@@ -163,6 +163,39 @@ func ParseDyntAtoms(value []byte) ([]Atom, error) {
 	return atoms, nil
 }
 
+// AreaOrigins reads subscreen area origins from CONTAINER.04 items (APPL
+// 0x0a/0x04): each is [1 area id][2 row][2 col][2 width][2 height] big-endian.
+// A dynpro with a subscreen (the logon screen's Information box) places that
+// area's atoms in coordinates relative to the area, and the area's screen
+// origin lives here; area 0 (the main screen) is the implicit (0,0). Returns
+// area id -> {row, col}. Read off the logon capture (area 1 -> row 1, col 36,
+// the inside of the FRAME box).
+func AreaOrigins(items []Item) map[byte][2]int {
+	m := map[byte][2]int{}
+	for _, it := range items {
+		if it.Type == ItemAPPL && it.ID == 0x0a && it.SID == 0x04 && len(it.Value) >= 5 {
+			m[it.Value[0]] = [2]int{beUint16(it.Value[1:]), beUint16(it.Value[3:])}
+		}
+	}
+	return m
+}
+
+// OffsetAtomsByArea translates each atom by its subscreen area's origin, so a
+// subscreen's atoms land where the area sits on screen instead of at (0,0). It
+// returns a new slice; atoms in an area with no origin (area 0, or one not in
+// the map) are copied unchanged.
+func OffsetAtomsByArea(atoms []Atom, origins map[byte][2]int) []Atom {
+	out := make([]Atom, len(atoms))
+	copy(out, atoms)
+	for i := range out {
+		if o, ok := origins[out[i].Area]; ok {
+			out[i].Row += o[0]
+			out[i].Col += o[1]
+		}
+	}
+	return out
+}
+
 // parseAtomBody reads what follows the header for the etypes seen so far.
 func parseAtomBody(a *Atom) {
 	r := a.Rest

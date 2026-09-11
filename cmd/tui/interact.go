@@ -75,6 +75,10 @@ func newScreenState(items []diag.Item) *screenState {
 			s.tabs = append(s.tabs, diag.ParseTabstrip(it.Value)...)
 		}
 	}
+	// Place each subscreen's atoms at its area origin (the logon Information box
+	// renders inside its frame, not at the top-left), before the fields read
+	// their positions and the cursor is matched.
+	s.atoms = diag.OffsetAtomsByArea(s.atoms, diag.AreaOrigins(items))
 	for i, a := range s.atoms {
 		if a.Attr&diag.AttrInvisible != 0 && a.EType != diag.AtomInputField {
 			continue // an invisible label/frame is not a control

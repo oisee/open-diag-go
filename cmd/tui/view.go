@@ -150,6 +150,9 @@ func (c *chrome) frameCanvas(items []diag.Item) (canvas *tui.Grid, note string, 
 	if !found {
 		return nil, "", false
 	}
+	// Place each subscreen's atoms at its area origin, so a subscreen (the logon
+	// Information box) renders inside its frame instead of at the top-left.
+	atoms = diag.OffsetAtomsByArea(atoms, diag.AreaOrigins(items))
 	note = fmt.Sprintf("%d atoms", len(atoms))
 	if partial {
 		note += " (partial)"
