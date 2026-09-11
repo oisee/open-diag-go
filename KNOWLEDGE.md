@@ -207,9 +207,19 @@ keystroke through the accelerator table `ST_R3INFO.13` (F8→8, F3→3, Ctrl+S�
 So a client fires any F-key with no per-screen binding: read `.13` once (it is
 sent at session start and persists), map the key to its function number, emit
 `UI_EVENT_SOURCE`. Implemented: `diag.ParseAccelTable`/`FKeyFuncs`/`AccelLabels`,
-`cmd/tui` `uiEventSource` + `session.fkeyFuncs` (the old `--fkeys` string path
-stays as an explicit override). The typed OK-code string in VARINFO.04 also
-works (A4H accepts it) but is not what a GUI does for a function key.
+`cmd/tui` `uiEventSource` + `session.fkeyFuncs`.
+
+**But `UI_EVENT_SOURCE` needs a LIVE control (live-tested).** It is the
+control-framework event channel; sending it in our replay-based session (whose
+CFW state is invalid — foreign OLE handles) makes A4H **ignore** the function
+and re-echo the screen. Same wall as ALV/editor. **OK-codes bypass CFW and do
+work**, so the client fires an F-key by resolving it to an OK-code string:
+accel table (key→number) + GUI status (number→label) + an on-screen pushbutton
+of that label (label→`=FCODE`). Verified: F7 on SE38 → `=SHOP` (Display), server
+processed it. Coverage is partial — MNUENTRY carries numbers and labels but **no
+fcode strings**, and only dynpro pushbuttons/tabstrip tabs carry a code on the
+wire, so a toolbar-only function (Execute/F8) still needs `--fkeys N=CODE`.
+`uiEventSource` is kept for when CFW generation lands.
 
 **Reuse works today:** splicing our fields DYNT_ATOM into a captured logon frame
 inherits its real MNUENTRY, so the menu bar, `New password` and status are
