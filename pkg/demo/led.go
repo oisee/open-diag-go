@@ -25,13 +25,58 @@ var ledSpectrum = []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.Co
 // count stays tied to this logical resolution.
 const LEDRows, LEDCols = 10, 22
 
-// ledEffectNames names the three effects, indexed by effect number.
-var ledEffectNames = []string{"plasma", "rings", "ball"}
+// ledEffectNames names the effects, indexed by effect number.
+var ledEffectNames = []string{"plasma", "rings", "ball", "neoncity"}
+
+// cityHash is a cheap deterministic pseudo-random for a building index, so a
+// skyline scrolls without any state.
+func cityHash(n int) uint32 {
+	x := uint32(n)*2654435761 + 1013904223
+	x ^= x >> 15
+	x *= 2246822519
+	x ^= x >> 13
+	return x
+}
+
+// cityCell renders one Neon City LED: two parallax layers of buildings (the far
+// one short, dim and slow; the near one tall, bright and fast — the near
+// occludes the far, which reads as depth), each building lit by flickering
+// windows. Sky is left dark.
+func cityCell(lr, lc int, t float64) (byte, byte) {
+	var col, ch byte = diag.ColKey, ledRamp[0] // dark sky
+	type layer struct {
+		speed    float64
+		bw       int
+		minH, mH int
+		body     byte
+		win      byte
+	}
+	for _, L := range []layer{
+		{0.9, 3, 2, 4, diag.ColGroup, diag.ColHeading},  // far
+		{2.2, 4, 4, 8, diag.ColTotal, diag.ColPositive}, // near
+	} {
+		worldC := lc + int(t*L.speed)
+		b := worldC / L.bw
+		h := L.minH + int(cityHash(b)%uint32(L.mH-L.minH+1))
+		if lr < LEDRows-h {
+			continue // sky for this layer
+		}
+		col, ch = L.body, ledRamp[len(ledRamp)/2]
+		// Windows: a sparse lit grid inside the building, flickering.
+		w := cityHash(b*131 + lr*17 + (worldC%L.bw)*7)
+		if (w>>8)%3 == 0 && (int(t*4)+int(w))%29 != 0 {
+			col, ch = L.win, ledRamp[len(ledRamp)-1]
+		}
+	}
+	return col, ch
+}
 
 // ledCell is the colour and density glyph for one logical LED, for the current
 // effect at time t.
 func ledCell(lr, lc int, t float64, eff int) (byte, byte) {
 	switch eff {
+	case 3: // neon city: parallax skyline with flickering windows
+		return cityCell(lr, lc, t)
 	case 1: // concentric rings breathing out from the centre
 		cx, cy := float64(LEDCols)/2, float64(LEDRows)/2
 		d := math.Hypot(float64(lc)-cx, (float64(lr)-cy)*2)
