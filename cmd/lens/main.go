@@ -17,7 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oisee/open-diag-go-pro/pkg/alv"
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/vibing-steampunk/pkg/sapcompress"
 )
 
 type line struct {
@@ -34,10 +36,18 @@ func main() {
 	grep := flag.String("grep", "", "show only items whose key contains this")
 	values := flag.Bool("values", false, "print item values (hex and text)")
 	maxVal := flag.Int("max", 48, "bytes of a value to print")
+	ole := flag.Bool("ole", false, "decode RFC_TR (0x08) OLE_FLUSH_CALL frames: SplitRFCTR strings + the inner VERBS/SVARS SAP-LZH streams")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "lens <capture.jsonl>")
 		os.Exit(2)
+	}
+	if *ole {
+		if err := runOLE(flag.Arg(0), *only, *maxVal); err != nil {
+			fmt.Fprintln(os.Stderr, "lens: ole:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	f, err := os.Open(flag.Arg(0))
 	if err != nil {
@@ -160,4 +170,104 @@ func printable(b []byte) string {
 		}
 	}
 	return string(out)
+}
+
+// oleText renders a decoded stream as text with non-printables dotted, capped.
+func oleText(b []byte, max int) string {
+	if len(b) > max {
+		b = b[:max]
+	}
+	out := make([]rune, 0, len(b))
+	for _, c := range b {
+		if c >= 32 && c < 127 {
+			out = append(out, rune(c))
+		} else {
+			out = append(out, '.')
+		}
+	}
+	return string(out)
+}
+
+// labelStream guesses which of the three inner streams this is from its content.
+func labelStream(b []byte) string {
+	s := string(b)
+	switch {
+	case strings.Contains(s, "CreateObject") || strings.Contains(s, "CreateControl") || strings.Contains(s, "FreeObject"):
+		return "VERBS"
+	case strings.Contains(s, "_RESULT") || strings.Contains(s, "#"):
+		return "SVARS-desc"
+	default:
+		return "SVARS-values"
+	}
+}
+
+// runOLE decodes every RFC_TR (APPL 0x08) frame's OLE payload: the SplitRFCTR
+// length-prefixed strings and each inner SAP-LZH stream (VERBS + the two SVARS
+// tables), decompressed. It is the offline tool for the control-answer RE.
+func runOLE(path, only string, maxVal int) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	ci, si := -1, -1
+	for sc.Scan() {
+		var l line
+		if json.Unmarshal(sc.Bytes(), &l) != nil {
+			continue
+		}
+		if only != "" && l.Dir != only {
+			// still advance counters below
+		}
+		d, err := hex.DecodeString(l.Hex)
+		if err != nil || len(d) == 0 {
+			continue
+		}
+		if _, ok := diag.NIControl(d); ok {
+			continue
+		}
+		idx := 0
+		firstClient := false
+		if l.Dir == "C->S" {
+			ci++
+			idx = ci
+			firstClient = ci == 0 && len(d) > diag.DPHeaderLen
+		} else {
+			si++
+			idx = si
+		}
+		if only != "" && l.Dir != only {
+			continue
+		}
+		m, err := diag.ParseMessage(d, firstClient)
+		if err != nil {
+			continue
+		}
+		for _, it := range diag.ParseItems(m.Body) {
+			if (it.Type != diag.ItemAPPL && it.Type != diag.ItemAPPL4) || it.ID != 0x08 {
+				continue
+			}
+			r := diag.SplitRFCTR(it.Value)
+			fmt.Printf("== %s #%d  RFC_TR.%02x  %d bytes  dest=%q  %d strings\n", l.Dir, idx, it.SID, len(it.Value), r.Destination, len(r.Strings))
+			for i, str := range r.Strings {
+				if i >= 16 {
+					fmt.Printf("     … +%d more strings\n", len(r.Strings)-16)
+					break
+				}
+				fmt.Printf("     s[%d] %s\n", i, oleText([]byte(str), maxVal))
+			}
+			streams := alv.ExtractLZHStreams(it.Value)
+			for i, st := range streams {
+				dec, derr := sapcompress.Decompress(st)
+				if derr != nil {
+					fmt.Printf("   stream[%d] %d bytes: decompress error: %v\n", i, len(st), derr)
+					continue
+				}
+				fmt.Printf("   stream[%d] -> %d bytes [%s]: %s\n", i, len(dec), labelStream(dec), oleText(dec, maxVal))
+			}
+		}
+	}
+	return sc.Err()
 }
