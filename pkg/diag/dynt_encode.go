@@ -51,6 +51,16 @@ func (a Atom) Encode() []byte {
 		putU16(body[2:], len(text))
 		body[10] = byte(len(text))
 		copy(body[11:], text)
+	case AtomFrame:
+		// attr, height and width as two-byte numbers, then the title — the
+		// mirror of the parser. Without this a synthesized group box (scr.Frame)
+		// encoded to an empty body and the real GUI drew no box outline.
+		title := []byte(a.Text)
+		body = make([]byte, 5+len(title))
+		body[0] = a.Attr
+		putU16(body[1:], a.Height)
+		putU16(body[3:], a.Length)
+		copy(body[5:], title)
 	default:
 		body = a.Rest
 	}

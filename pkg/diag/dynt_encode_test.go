@@ -54,3 +54,22 @@ func TestEncodeDyntButtonCheckbox(t *testing.T) {
 		t.Errorf("checkbox: %+v", back[1])
 	}
 }
+
+// A synthesized FRAME (no Rest from the wire) must encode its body — attr,
+// height, width, title — so a real GUI draws the group box. Regression: it
+// used to fall through to an empty body and no box appeared.
+func TestEncodeFrameBody(t *testing.T) {
+	f := Atom{EType: AtomFrame, Row: 0, Col: 35, Height: 19, Length: 56, Text: "Information"}
+	enc := f.Encode()
+	if len(enc) <= AtomHeaderLen {
+		t.Fatalf("frame encoded to %d bytes (header only = empty body bug)", len(enc))
+	}
+	got, err := ParseDyntAtoms(enc)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("parse back: %v (%d atoms)", err, len(got))
+	}
+	a := got[0]
+	if a.EType != AtomFrame || a.Height != 19 || a.Length != 56 || a.Value() != "Information" {
+		t.Errorf("round-trip = etype 0x%02x h=%d w=%d title=%q", a.EType, a.Height, a.Length, a.Value())
+	}
+}
