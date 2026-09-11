@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
@@ -125,5 +126,43 @@ func TestDecodeEasyAccessCall(t *testing.T) {
 	}
 	if len(minted) > 0 && minted[0] != "O1" {
 		t.Errorf("first handle = %q, want O1", minted[0])
+	}
+
+	// FillResults writes our handles into the _RESULT slots in place; every
+	// other byte of the value pool is preserved, and the filled slots read
+	// back as our handles.
+	e2 := NewEngine()
+	filled, written := e2.FillResults(vs, ds, values)
+	if len(filled) != len(values) {
+		t.Fatalf("FillResults changed the pool length: %d != %d", len(filled), len(values))
+	}
+	if len(written) == 0 {
+		t.Fatal("FillResults wrote no handles")
+	}
+	// each written handle appears in the pool at the record its slot named
+	for _, h := range written {
+		if !strings.Contains(string(filled), "000000000"+h) {
+			t.Errorf("handle %q not written into the value pool", h)
+		}
+	}
+	// bytes outside the touched value records are unchanged
+	touched := map[int]bool{}
+	for _, d := range ds {
+		if d.IsResult() {
+			if sl := ResultSlot(d.Pointer); sl >= 0 {
+				touched[sl] = true
+			}
+		}
+	}
+	for rec := 0; rec*337 < len(values); rec++ {
+		if touched[rec] {
+			continue
+		}
+		a := values[rec*337 : (rec+1)*337]
+		b := filled[rec*337 : (rec+1)*337]
+		if string(a) != string(b) {
+			t.Errorf("untouched value record %d changed", rec)
+			break
+		}
 	}
 }

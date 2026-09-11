@@ -9,9 +9,10 @@
 //   - VERBS: the script. 53-byte records, one per automation verb —
 //     objId right-aligned in [0:9], verb name in [10:52], a flag byte at [52]
 //     (C = call a method, S = set a property, G = get a property).
-//   - SVARS descriptor: 44-byte records — a slot/group/type prefix in [0:8]
-//     and a name at [8:] that is either "#N" (a positional input the server
-//     fills) or "_RESULT" (an output slot the FRONTEND fills).
+//   - SVARS descriptor: 44-byte records with columns [group, type, name,
+//     pointer] — group is the 1-based verb index, name is "#N" (a positional
+//     input the server fills) or "_RESULT" (an output slot the FRONTEND fills),
+//     pointer the value-pool record the slot maps to.
 //   - SVARS value pool: 337-byte records holding the values, output slots
 //     carrying the frontend-minted object handles as "000000000O<n>".
 //
@@ -23,13 +24,17 @@
 // session never minted and SAPLOLEA dumps (MESSAGE X373 '-1'). The Engine here
 // mints this session's own handles as it walks the verbs.
 //
-// This file is the DECODER and state model. Byte-exact answer emission needs
-// the value-pool sub-layout and the inter-string tag grammar pinned first; it
-// is deliberately not attempted here.
+// This file is the DECODER, the state model, and FillResults — the core of
+// emission: it substitutes this session's handles into a value pool's _RESULT
+// slots in place. Assembling a whole RFC_TR.01 frame (recompressing the
+// modified streams and reproducing the inter-string envelope) is the remaining
+// step, then one live A4H run decides whether client-minted handles are
+// accepted.
 package cfw
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/oisee/open-diag-go-pro/pkg/alv"
@@ -43,7 +48,6 @@ const (
 	valueRecLen = 337
 	verbNameOff = 10 // verb name column start within a 53-byte record
 	verbFlagOff = 52 // the C/S/G flag byte
-	descNameOff = 8  // the #N / _RESULT name column within a 44-byte record
 )
 
 // Verb is one automation instruction from the VERBS stream.
@@ -63,11 +67,15 @@ func (v Verb) Creates() bool {
 	return false
 }
 
-// SvarsRec is one record of the SVARS descriptor table.
+// SvarsRec is one record of the SVARS descriptor table: the columns are
+// [group, type, name, pointer] — group is the 1-based index of the verb this
+// slot belongs to, type 12=string/3=int, name "#N" (a server-filled input) or
+// "_RESULT" (a frontend output), pointer the 1-based value-pool record index.
 type SvarsRec struct {
 	Fields  []string // the record's whitespace-separated columns
+	Group   string   // the verb index this slot belongs to
 	Name    string   // "#N" (server-filled input) or "_RESULT" (frontend output)
-	Pointer string   // for a _RESULT slot, the value-table pointer that follows it
+	Pointer string   // the value-pool record index this slot maps to
 }
 
 // IsResult reports whether this descriptor slot is a frontend output slot.
@@ -150,13 +158,13 @@ func ParseSvarsDesc(b []byte) []SvarsRec {
 		if len(fields) == 0 {
 			continue
 		}
-		r := SvarsRec{Fields: fields}
-		// The name is the "#N" or "_RESULT" column; a _RESULT slot is followed
-		// by its value-table pointer.
+		r := SvarsRec{Fields: fields, Group: fields[0]}
+		// The name is the "#N" or "_RESULT" column, and the pointer is the
+		// value-pool index that follows it.
 		for i, f := range fields {
 			if f == "_RESULT" || (len(f) > 1 && f[0] == '#') {
 				r.Name = f
-				if f == "_RESULT" && i+1 < len(fields) {
+				if i+1 < len(fields) {
 					r.Pointer = fields[i+1]
 				}
 				break
@@ -225,6 +233,57 @@ func (e *Engine) mint() string {
 	e.next++
 	e.Minted = append(e.Minted, h)
 	return h
+}
+
+// FillResults writes this session's handles into the _RESULT slots of a value
+// pool, in place, leaving every other byte untouched. It pairs the object-
+// creating verbs (in order) with the _RESULT descriptor slots (in order): the
+// nth create verb's minted handle goes into the nth _RESULT slot, at the value
+// record the slot's pointer names. It returns the modified value pool and the
+// handles written. This is the core of emitting an RFC_TR.01: a captured
+// answer's bytes with our own handles substituted for the foreign session's.
+func (e *Engine) FillResults(verbs []Verb, desc []SvarsRec, values []byte) ([]byte, []string) {
+	// Map each verb group (1-based verb index) to its _RESULT value-pool slot.
+	slotOf := map[string]int{}
+	for _, d := range desc {
+		if d.IsResult() {
+			slotOf[d.Group] = ResultSlot(d.Pointer)
+		}
+	}
+	out := append([]byte(nil), values...)
+	written := []string{}
+	for i, v := range verbs {
+		if !v.Creates() {
+			continue
+		}
+		h := e.mint()
+		if v.ObjID != "" {
+			e.Handles[v.ObjID] = h
+		}
+		group := strconv.Itoa(i + 1) // the descriptor group is the 1-based verb index
+		slot, ok := slotOf[group]
+		if !ok || slot < 0 {
+			continue // creating verb with no _RESULT slot found (handle still minted)
+		}
+		off := slot * valueRecLen
+		if off+valueRecLen > len(out) {
+			continue
+		}
+		writeHandle(out[off:off+valueRecLen], h)
+		written = append(written, h)
+	}
+	return out, written
+}
+
+// writeHandle overwrites one value-pool record's value field with a minted
+// handle: the 9-zero prefix, the handle, then spaces to the record's end. The
+// name column [0:valNameCol] (the _RESULT marker) is left as it was.
+func writeHandle(rec []byte, handle string) {
+	v := rec[valNameCol:]
+	for i := range v {
+		v[i] = ' '
+	}
+	copy(v, "000000000"+handle)
 }
 
 // Run walks a call's verbs and mints a handle for each object-creating verb,
