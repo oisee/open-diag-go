@@ -912,7 +912,7 @@ func (s *session) redraw() {
 	}
 	msgType, msg := s.msgType, s.msg
 	if s.scr.inCmd {
-		msgType, msg = 0, "OK-code: "+s.scr.cmd+"▏"
+		msgType, msg = 0, "command field — Enter/✓ sends  Esc cancels  (e.g. =STRT to Execute, /nse38)"
 	} else if s.pending {
 		msgType, msg = 0, "…"
 	}
@@ -929,6 +929,9 @@ func (s *session) redraw() {
 // canvas and prints it in colour; plain, it prints the bare grid. Interactive,
 // it also marks the focused field and places the terminal cursor on it.
 func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
+	if s.interactive && s.scr != nil {
+		s.chrome.command, s.chrome.commandActive = s.scr.cmd, s.scr.inCmd
+	}
 	if s.screen != nil {
 		s.drawTcell(canvas, msgType, msg, note)
 		return
@@ -947,7 +950,7 @@ func (s *session) draw(canvas *tui.Grid, msgType byte, msg, note string) {
 	g := s.chrome.compose(canvas, msgType, msg, note, rows, cols)
 	cr, cc := 0, 0
 	if s.interactive && s.scr != nil && !s.hasList && !s.scr.inCmd {
-		cr, cc = s.scr.markFocus(g, 3)
+		cr, cc = s.scr.markFocus(g, tui.ChromeRows-1)
 	}
 	if s.interactive && s.menuOpen {
 		s.drawMenu(g)

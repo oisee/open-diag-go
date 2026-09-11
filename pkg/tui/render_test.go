@@ -281,12 +281,14 @@ func TestRenderPasswordMask(t *testing.T) {
 	}
 }
 
-// Compose puts title, menus and toolbar above the canvas and the status bar
-// below, and the canvas lands at row 3 unchanged.
+// Compose puts title, menus, the standard toolbar (with the command field) and
+// the application toolbar above the canvas, and the status bar below; the
+// canvas lands at row ChromeRows-1.
 func TestCompose(t *testing.T) {
 	canvas := Render([]diag.Atom{diag.Label(0, 0, "Client")}, 2, 20)
 	v := View{Title: "SAP R/3 (1) A4H", Menus: []string{"User", "System", "Help"},
-		Toolbar: []string{"New password"}, Canvas: canvas, MsgType: 'E', Message: "Name or password is incorrect", Info: "A4H (1) 001"}
+		Toolbar: []string{"New password"}, Canvas: canvas, MsgType: 'E', Message: "Name or password is incorrect", Info: "A4H (1) 001",
+		Command: "se38"}
 	g := Compose(v, 0, 60)
 	if g.Rows != 2+ChromeRows || g.Cols != 60 {
 		t.Fatalf("composed size %dx%d", g.Rows, g.Cols)
@@ -297,16 +299,25 @@ func TestCompose(t *testing.T) {
 	if got := at(g, 1, 1, 18); got != "User  System  Help" {
 		t.Errorf("menu bar = %q", got)
 	}
-	if got := at(g, 2, 1, 14); got != " New password " {
-		t.Errorf("toolbar = %q", got)
+	// Standard toolbar: the Enter button and the command field showing "se38".
+	if got := at(g, stdToolbarRow, stdEnterCol, 1); got != "✓" {
+		t.Errorf("Enter button = %q", got)
 	}
-	if got := at(g, 3, 0, 6); got != "Client" {
+	if got := at(g, stdToolbarRow, stdCmdCol, 6); got != "se38__" {
+		t.Errorf("command field = %q", got)
+	}
+	// Application toolbar is now the row below the standard toolbar.
+	if got := at(g, 3, 1, 14); got != " New password " {
+		t.Errorf("app toolbar = %q", got)
+	}
+	if got := at(g, ChromeRows-1, 0, 6); got != "Client" {
 		t.Errorf("canvas row 0 = %q", got)
 	}
-	if got := at(g, 5, 1, 31); got != "✖ Name or password is incorrect" {
+	sr := g.Rows - 1
+	if got := at(g, sr, 1, 31); got != "✖ Name or password is incorrect" {
 		t.Errorf("status message = %q", got)
 	}
-	if got := at(g, 5, 60-12, 11); got != "A4H (1) 001" {
+	if got := at(g, sr, 60-12, 11); got != "A4H (1) 001" {
 		t.Errorf("status info = %q", got)
 	}
 	if !strings.Contains(g.ANSILine(0, 60), "48;5;24") {

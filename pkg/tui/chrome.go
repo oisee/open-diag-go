@@ -26,11 +26,30 @@ type View struct {
 	Message string
 	// Info is the right-hand end of the status bar: system, client, program.
 	Info string
+	// Command is the text in the standard-toolbar command field (the OK-code /
+	// transaction entry). CommandActive highlights it while it is being typed.
+	Command       string
+	CommandActive bool
 }
 
-// ChromeRows is how many rows Compose adds round the canvas: title, menu,
-// toolbar above; status bar below.
-const ChromeRows = 4
+// ChromeRows is how many rows Compose adds round the canvas: title, menu, the
+// standard toolbar (with the command field) and the application toolbar above;
+// the status bar below.
+const ChromeRows = 5
+
+// Standard-toolbar layout: the Enter button, then the command field.
+const (
+	stdToolbarRow = 2
+	stdEnterCol   = 1
+	stdCmdCol     = 4
+	stdCmdWidth   = 20
+)
+
+// CommandFieldSpan is the column range of the standard-toolbar command field,
+// so a click there can focus it. EnterButtonCol is where the Enter (✓) button
+// sits.
+func CommandFieldSpan() (col, width, row int) { return stdCmdCol, stdCmdWidth, stdToolbarRow }
+func EnterButtonCol() (col, row int)          { return stdEnterCol, stdToolbarRow }
 
 // Compose lays the view into one grid of exactly rows by cols cells (a
 // non-positive value takes what the canvas needs), clipping a canvas that
@@ -60,20 +79,49 @@ func Compose(v View, rows, cols int) *Grid {
 		col += len([]rune(m)) + 2
 	}
 
+	// Standard toolbar: the Enter button, the command field, then the fixed GUI
+	// buttons (Save, Back, Exit, Cancel, Print, Find). The command field is an
+	// input box; the rest are glyphs.
+	g.fill(stdToolbarRow, 0, cols, 1, ' ', StyleToolbar)
+	g.put(stdToolbarRow, stdEnterCol, "✓", Style{Fg: 34, Bold: true})
+	cmd := []rune(v.Command)
+	if len(cmd) > stdCmdWidth {
+		cmd = cmd[len(cmd)-stdCmdWidth:]
+	}
+	fieldSt := StyleInput
+	if v.CommandActive {
+		fieldSt.Reverse = true
+	}
+	for i := 0; i < stdCmdWidth; i++ {
+		ch := '_'
+		if i < len(cmd) {
+			ch = cmd[i]
+		}
+		g.set(stdToolbarRow, stdCmdCol+i, Cell{ch, fieldSt})
+	}
+	col = stdCmdCol + stdCmdWidth + 2
+	for _, b := range []struct {
+		glyph rune
+		fg    uint8
+	}{{'▤', 24}, {'←', 34}, {'↑', 220}, {'✕', 160}, {'⎙', 240}, {'⌕', 240}} {
+		g.set(stdToolbarRow, col, Cell{b.glyph, Style{Fg: b.fg}})
+		col += 2
+	}
+
 	// Application toolbar: captions in button faces, a blank between.
-	g.fill(2, 0, cols, 1, ' ', StyleToolbar)
+	g.fill(3, 0, cols, 1, ' ', StyleToolbar)
 	col = 1
 	for _, t := range v.Toolbar {
 		cells := expandIcons(" "+t+" ", StyleButton)
-		g.putCells(2, col, cells)
+		g.putCells(3, col, cells)
 		col += len(cells) + 1
 	}
 
-	// Canvas from row 3 down to the status bar.
+	// Canvas from row ChromeRows-1 down to the status bar.
 	canvasRows := rows - ChromeRows
 	for r := 0; r < canvasRows && r < canvas.Rows; r++ {
 		for c := 0; c < cols && c < canvas.Cols; c++ {
-			g.set(3+r, c, canvas.cells[r][c])
+			g.set(ChromeRows-1+r, c, canvas.cells[r][c])
 		}
 	}
 

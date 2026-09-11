@@ -21,6 +21,8 @@ type chrome struct {
 	dynpro  string
 	rows    int // dynpro size from VARINFO.06, 0 when unknown
 	cols    int
+	command       string // the standard-toolbar command field text
+	commandActive bool   // it is being typed into
 }
 
 // update takes the chrome items out of a frame's items, keeping what was
@@ -97,13 +99,15 @@ func (c *chrome) info(extra string) string {
 // the terminal (rows/cols 0 = as big as the canvas needs).
 func (c *chrome) compose(canvas *tui.Grid, msgType byte, msg, extra string, rows, cols int) *tui.Grid {
 	v := tui.View{
-		Title:   c.title,
-		Menus:   c.menus,
-		Toolbar: c.toolbar,
-		Canvas:  canvas,
-		MsgType: msgType,
-		Message: msg,
-		Info:    c.info(extra),
+		Title:         c.title,
+		Menus:         c.menus,
+		Toolbar:       c.toolbar,
+		Canvas:        canvas,
+		MsgType:       msgType,
+		Message:       msg,
+		Info:          c.info(extra),
+		Command:       c.command,
+		CommandActive: c.commandActive,
 	}
 	return tui.Compose(v, rows, cols)
 }

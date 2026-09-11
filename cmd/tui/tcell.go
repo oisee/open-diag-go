@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
@@ -138,6 +140,22 @@ func (s *session) handleMouse(e *tcell.EventMouse) {
 	if len(diag.ParseMenus(s.statusItems)) > 0 && s.menuClick(y, x) {
 		return
 	}
+	// The standard toolbar: a click on the command field focuses it, a click on
+	// the Enter button submits it (the way the SAP GUI command bar works).
+	if cmdCol, cmdW, cmdRow := tui.CommandFieldSpan(); y == cmdRow && x >= cmdCol && x < cmdCol+cmdW {
+		s.scr.inCmd = true
+		s.redraw()
+		return
+	}
+	if ec, er := tui.EnterButtonCol(); y == er && x == ec {
+		cmd := strings.TrimSpace(s.scr.cmd)
+		s.scr.inCmd, s.scr.cmd = false, ""
+		if err := s.sendPAI(cmd, -1); err != nil {
+			s.msgType, s.msg = 'E', "send: "+err.Error()
+		}
+		s.redraw()
+		return
+	}
 	if s.hasList {
 		return
 	}
@@ -177,7 +195,15 @@ func (s *session) drawTcell(canvas *tui.Grid, msgType byte, msg, note string) {
 	w, h := s.screen.Size()
 	g := s.chrome.compose(canvas, msgType, msg, note, h, w)
 	cr, cc := 0, 0
-	if s.scr != nil && !s.hasList && !s.scr.inCmd {
+	if s.scr != nil && s.scr.inCmd {
+		// The caret sits in the standard-toolbar command field.
+		cmdCol, cmdW, cmdRow := tui.CommandFieldSpan()
+		n := len([]rune(s.scr.cmd))
+		if n > cmdW-1 {
+			n = cmdW - 1
+		}
+		cr, cc = cmdRow+1, cmdCol+n+1
+	} else if s.scr != nil && !s.hasList {
 		cr, cc = s.scr.markFocus(g, tui.ChromeRows-1)
 	}
 	if s.menuOpen {
