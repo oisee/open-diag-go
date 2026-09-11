@@ -360,8 +360,8 @@ func sceneSolid(ts float64, scr *frame.Screen) {
 	sort.Slice(order, func(i, j int) bool { return pz[order[i]] > pz[order[j]] })
 	for _, i := range order {
 		depth := Clampi(int((1-(pz[i]+2)/4)*100), 0, 100) // 0 far .. 100 near
-		w := 1 + depth*3/100                              // 1..4
-		h := 1 + depth/100                                // 1..2
+		w := 1 + depth*6/100                              // 1..7
+		h := 1 + depth*2/100                              // 1..3
 		scr.ButtonH(py[i]-h/2, px[i]-w/2, w, h, "", fmt.Sprintf("=S%d", i))
 	}
 }

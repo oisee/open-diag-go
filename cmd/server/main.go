@@ -1107,6 +1107,12 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 			acc += d
 		}
 		ts := (pos - acc).Seconds()
+		// A single scene (played via -scene) should spin forever, not reset
+		// every scene length — give it the raw elapsed time so its animation is
+		// continuous.
+		if len(scenes) == 1 {
+			ts = time.Since(start).Seconds()
+		}
 		if idx != lastScene {
 			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach)
 			lastScene = idx
