@@ -386,10 +386,10 @@ func sceneTornado(ts float64, scr *frame.Screen) {
 	}
 	var items []item
 	for r := 0; r < rows; r++ {
-		hf := float64(r) / float64(rows)          // 0 top .. 1 bottom
-		radius := 6.0 + (1-hf)*34.0               // wide at top, tight at the base
-		sway := math.Sin(ts*2.0+float64(r)*0.4) * 3 // the column leans and whips
-		base := ts*2.4 + float64(r)*0.75            // higher rows twist further
+		hf := float64(r) / float64(rows)             // 0 top .. 1 bottom
+		radius := 6.0 + (1-hf)*34.0                  // wide at top, tight at the base
+		sway := math.Sin(ts*2.6+float64(r)*0.4) * 7  // the column leans and whips
+		base := ts*4.8 + float64(r)*0.75             // higher rows twist further
 		for k := 0; k < perRing; k++ {
 			a := base + float64(k)*math.Pi
 			col := Clampi(int(cx+sway+radius*math.Cos(a)), 1, 116)
