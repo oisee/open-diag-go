@@ -73,24 +73,55 @@ type SvarsRec struct {
 // IsResult reports whether this descriptor slot is a frontend output slot.
 func (r SvarsRec) IsResult() bool { return r.Name == "_RESULT" }
 
-// Streams recovers and decompresses the three inner streams of an RFC_TR OLE
-// call (the raw APPL 0x08 item value). ExtractLZHStreams yields them in the
-// order descriptor, value pool, VERBS.
+// Streams recovers and decompresses the inner streams of an RFC_TR OLE call
+// (the raw APPL 0x08 item value) and returns them by role. A call usually
+// carries three (VERBS, SVARS descriptor, value pool) but some carry only one
+// or two (a data-only leg, or a call with no results), so each is classified
+// by content rather than by position. A missing role comes back nil.
 func Streams(rfctrValue []byte) (verbs, desc, values []byte, err error) {
 	raw := alv.ExtractLZHStreams(rfctrValue)
-	if len(raw) < 3 {
-		return nil, nil, nil, fmt.Errorf("cfw: expected 3 inner streams, got %d", len(raw))
+	if len(raw) == 0 {
+		return nil, nil, nil, fmt.Errorf("cfw: no inner streams")
 	}
-	if desc, err = sapcompress.Decompress(raw[0]); err != nil {
-		return nil, nil, nil, fmt.Errorf("cfw: descriptor: %w", err)
-	}
-	if values, err = sapcompress.Decompress(raw[1]); err != nil {
-		return nil, nil, nil, fmt.Errorf("cfw: value pool: %w", err)
-	}
-	if verbs, err = sapcompress.Decompress(raw[2]); err != nil {
-		return nil, nil, nil, fmt.Errorf("cfw: verbs: %w", err)
+	for _, r := range raw {
+		dec, e := sapcompress.Decompress(r)
+		if e != nil {
+			continue
+		}
+		switch classifyStream(dec) {
+		case streamVerbs:
+			verbs = dec
+		case streamValues:
+			values = dec
+		default: // descriptor
+			desc = dec
+		}
 	}
 	return verbs, desc, values, nil
+}
+
+type streamKind int
+
+const (
+	streamDesc streamKind = iota
+	streamVerbs
+	streamValues
+)
+
+// classifyStream identifies an inner stream by content: a verb name marks the
+// VERBS script; the 9-zero value prefix marks the value pool (which also holds
+// _RESULT, so check it first); otherwise it is the descriptor.
+func classifyStream(b []byte) streamKind {
+	s := string(b)
+	if strings.Contains(s, "CreateObject") || strings.Contains(s, "CreateControl") ||
+		strings.Contains(s, "SetProperty") || strings.Contains(s, "FreeObject") ||
+		strings.Contains(s, "GetContainer") {
+		return streamVerbs
+	}
+	if strings.Contains(s, "000000000") {
+		return streamValues
+	}
+	return streamDesc
 }
 
 // ParseVerbs splits the VERBS stream into its 53-byte records.
