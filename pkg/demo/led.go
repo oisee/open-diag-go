@@ -26,7 +26,38 @@ var ledSpectrum = []byte{diag.ColKey, diag.ColHeading, diag.ColPositive, diag.Co
 const LEDRows, LEDCols = 10, 22
 
 // ledEffectNames names the effects, indexed by effect number.
-var ledEffectNames = []string{"plasma", "rings", "ball", "neoncity"}
+var ledEffectNames = []string{"plasma", "rings", "ball", "neoncity", "mountains"}
+
+// mountainCell renders one Mountains LED: parallax ridge lines — a far range
+// (high, light, slow) behind a near range (low, dark, fast) — each a sum of
+// sines scrolling past, the ridge crest picked out brighter like a snow cap.
+// Sky above is left light.
+func mountainCell(lr, lc int, t float64) (byte, byte) {
+	var col, ch byte = diag.ColKey, ledRamp[1] // pale sky
+	type layer struct {
+		speed, freq, amp float64
+		base             int
+		body, crest      byte
+	}
+	for _, L := range []layer{
+		{0.5, 0.45, 4.0, 4, diag.ColHeading, diag.ColNormal}, // far range: high, light
+		{1.3, 0.7, 4.5, 2, diag.ColGroup, diag.ColTotal},     // near range: jagged, dark
+	} {
+		w := float64(lc) + t*L.speed
+		ridge := (math.Sin(w*L.freq) + math.Sin(w*L.freq*2.3+1.3)*0.5 + 1.5) / 3 // 0..1, jagged
+		h := L.base + int(L.amp*ridge)
+		top := LEDRows - h
+		if lr < top {
+			continue
+		}
+		if lr == top {
+			col, ch = L.crest, ledRamp[len(ledRamp)-1] // crest / snow
+		} else {
+			col, ch = L.body, ledRamp[len(ledRamp)/2+3]
+		}
+	}
+	return col, ch
+}
 
 // cityHash is a cheap deterministic pseudo-random for a building index, so a
 // skyline scrolls without any state.
@@ -77,6 +108,8 @@ func ledCell(lr, lc int, t float64, eff int) (byte, byte) {
 	switch eff {
 	case 3: // neon city: parallax skyline with flickering windows
 		return cityCell(lr, lc, t)
+	case 4: // mountains: parallax ridge lines with bright crests
+		return mountainCell(lr, lc, t)
 	case 1: // concentric rings breathing out from the centre
 		cx, cy := float64(LEDCols)/2, float64(LEDRows)/2
 		d := math.Hypot(float64(lc)-cx, (float64(lr)-cy)*2)
