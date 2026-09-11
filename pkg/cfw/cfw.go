@@ -218,11 +218,12 @@ type Engine struct {
 	next    int
 	Handles map[string]string // objId -> minted "O<n>"
 	Minted  []string          // handles minted this session, in order
+	remap   map[string]string // captured handle -> our handle, session-wide
 }
 
 // NewEngine starts a fresh session engine.
 func NewEngine() *Engine {
-	return &Engine{next: 1, Handles: map[string]string{}}
+	return &Engine{next: 1, Handles: map[string]string{}, remap: map[string]string{}}
 }
 
 // mint returns the next frontend-owned OLE handle ("O1", "O2", …) and records
@@ -269,10 +270,53 @@ func (e *Engine) FillResults(verbs []Verb, desc []SvarsRec, values []byte) ([]by
 		if off+valueRecLen > len(out) {
 			continue
 		}
+		// Record the captured handle this slot held so later calls that feed
+		// it back as an input can be remapped to our handle.
+		if old := handleIn(out[off : off+valueRecLen]); old != "" {
+			e.remap[old] = h
+		}
 		writeHandle(out[off:off+valueRecLen], h)
 		written = append(written, h)
 	}
 	return out, written
+}
+
+// handleIn returns the "O<n>" handle a value-pool record carries, or "".
+func handleIn(rec []byte) string {
+	v := strings.TrimSpace(string(rec[valNameCol:]))
+	v = strings.TrimSpace(strings.TrimPrefix(v, "000000000"))
+	if len(v) >= 2 && v[0] == 'O' {
+		ok := true
+		for _, c := range v[1:] {
+			if c < '0' || c > '9' {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// RemapInputs rewrites, in place, every value-pool record whose handle input
+// refers to an object created earlier this session, replacing the captured
+// session's handle with ours (from the bijection FillResults built). This is
+// what keeps a whole session consistent: the server stored our handles from
+// earlier answers and feeds them back, so a later answer must speak our
+// handles, not the captured GUI's.
+func (e *Engine) RemapInputs(values []byte) {
+	for off := 0; off+valueRecLen <= len(values); off += valueRecLen {
+		rec := values[off : off+valueRecLen]
+		h := handleIn(rec)
+		if h == "" {
+			continue
+		}
+		if mapped, ok := e.remap[h]; ok && mapped != h {
+			writeHandle(rec, mapped)
+		}
+	}
 }
 
 // writeHandle overwrites one value-pool record's value field with a minted

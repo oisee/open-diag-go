@@ -103,6 +103,9 @@ func (s *session) genControlAnswer(liveItems []diag.Item, capFrame []byte, count
 				return nil, fmt.Errorf("captured answer has no value pool: %v", e)
 			}
 			filled, _ := s.engine.FillResults(verbs, cfw.ParseSvarsDesc(desc), values)
+			// Rewrite input handle references to earlier objects into our own
+			// handles, so the whole session speaks the handles we minted.
+			s.engine.RemapInputs(filled)
 			spliced, e := cfw.SpliceValuePool(it.Value, filled)
 			if e != nil {
 				return nil, e
