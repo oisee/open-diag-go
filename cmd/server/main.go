@@ -1083,6 +1083,9 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		d := s.Dur
 		if d <= 0 {
 			d = def
+			if s.DurMul > 0 {
+				d = time.Duration(float64(def) * s.DurMul)
+			}
 		}
 		durs[i] = d
 		total += d

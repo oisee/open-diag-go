@@ -11,6 +11,7 @@ package demo
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,10 @@ type Scene struct {
 	// Dur is the scene's length; 0 means use the caller's default. The login
 	// opener needs longer than a beat, so it sets its own.
 	Dur time.Duration
+	// DurMul, when > 0, makes this scene run that multiple of the default
+	// length (2 = twice as long), tracking the -scene-ms flag instead of a
+	// fixed Dur. Ignored when Dur is set.
+	DurMul float64
 	// Bare drops the caption/footer for this scene, so the login opener can
 	// look like a real logon screen and nothing else.
 	Bare bool
@@ -77,11 +82,12 @@ func Scenes() []Scene {
 	}
 	return []Scene{
 		{Name: "login", Approach: "a login form that sits, drifts a square, orbits, then multiplies", Dur: 26 * time.Second, Bare: true, Dynpro: sceneLogin},
-		{Name: "orbit", Approach: "3 widgets moved by coordinate, sized by depth", Dynpro: sceneOrbit},
+		{Name: "orbit", Approach: "3 widgets moved by coordinate, sized by depth", DurMul: 2, Dynpro: sceneOrbit},
 		{Name: "cube", Approach: "a wireframe cube spinning on two axes, near vertices bright — few objects, like orbit", Dynpro: sceneCube},
 		{Name: "tetra", Approach: "a wireframe tetrahedron tumbling fast", Dynpro: sceneTetra},
 		{Name: "octa", Approach: "a wireframe octahedron spinning fast", Dynpro: sceneOcta},
-		{Name: "equalizer", Approach: "a row of buttons whose Height is the graphics — bars", Dynpro: sceneEqualizer},
+		{Name: "solid", Approach: "a spinning cube whose edges are z-sorted BUTTONs — solid filled rectangles", Dynpro: sceneSolid},
+		{Name: "equalizer", Approach: "a row of buttons whose Height is the graphics — bars", DurMul: 2, Dynpro: sceneEqualizer},
 		{Name: "snake", Approach: "a label snake on a Lissajous path, with a fading trail", Dynpro: sceneSnake},
 		{Name: "matrix", Approach: "sparse falling columns — the grid used lightly", Dynpro: sceneMatrix},
 		{Name: "fireworks", Approach: "rockets that rise and burst into gravity-fed sparks", Dur: 9 * time.Second, Dynpro: sceneFireworks, Sound: fireworksSound},
@@ -292,6 +298,50 @@ var (
 )
 
 func sceneCube(ts float64, scr *frame.Screen)  { spinWireframe(scr, ts, cubeVerts, cubeEdges, 1.0, 0.9, 1.3) }
+
+// sceneSolid spins the cube but draws each edge as a BUTTON whose two opposite
+// corners sit on the edge's two projected vertices — a solid, chunky cube of
+// filled rectangles. The edges are z-sorted so the near ones draw last and
+// cover the far ones (painter's algorithm), which reads as a solid 3D box.
+func sceneSolid(ts float64, scr *frame.Screen) {
+	const cx, cy, d = 59.0, 12.0, 3.2
+	rx, ry := ts*0.9, ts*1.3
+	n := len(cubeVerts)
+	px := make([]int, n)
+	py := make([]int, n)
+	pz := make([]float64, n)
+	for i, v := range cubeVerts {
+		x, y, z := v[0], v[1], v[2]
+		x, z = x*math.Cos(ry)-z*math.Sin(ry), x*math.Sin(ry)+z*math.Cos(ry)
+		y, z = y*math.Cos(rx)-z*math.Sin(rx), y*math.Sin(rx)+z*math.Cos(rx)
+		p := d / (z + d)
+		px[i] = int(cx + x*p*20)
+		py[i] = int(cy + y*p*9)
+		pz[i] = z
+	}
+	type ebtn struct {
+		row, col, w, h int
+		depth          float64
+		fc             string
+	}
+	ebs := make([]ebtn, 0, len(cubeEdges))
+	for j, e := range cubeEdges {
+		a, b := e[0], e[1]
+		c0, c1 := px[a], px[b]
+		if c0 > c1 {
+			c0, c1 = c1, c0
+		}
+		r0, r1 := py[a], py[b]
+		if r0 > r1 {
+			r0, r1 = r1, r0
+		}
+		ebs = append(ebs, ebtn{r0, c0, c1 - c0 + 1, r1 - r0 + 1, (pz[a] + pz[b]) / 2, fmt.Sprintf("=S%d", j)})
+	}
+	sort.Slice(ebs, func(i, k int) bool { return ebs[i].depth > ebs[k].depth }) // far first
+	for _, b := range ebs {
+		scr.ButtonH(b.row, b.col, b.w, b.h, "", b.fc)
+	}
+}
 func sceneTetra(ts float64, scr *frame.Screen) { spinWireframe(scr, ts, tetraVerts, tetraEdges, 1.3, 1.4, 1.8) }
 func sceneOcta(ts float64, scr *frame.Screen)  { spinWireframe(scr, ts, octaVerts, octaEdges, 1.6, 1.7, 1.1) }
 
