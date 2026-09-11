@@ -87,6 +87,7 @@ func Scenes() []Scene {
 		{Name: "tetra", Approach: "a wireframe tetrahedron tumbling fast", Dynpro: sceneTetra},
 		{Name: "octa", Approach: "a wireframe octahedron spinning fast", Dynpro: sceneOcta},
 		{Name: "solid", Approach: "a spinning cube whose edges are z-sorted BUTTONs — solid filled rectangles", Dynpro: sceneSolid},
+		{Name: "tornado", Approach: "a funnel of mixed widgets — buttons, icons, inputs, labels — spiralling like a tornado", Dynpro: sceneTornado},
 		{Name: "equalizer", Approach: "a row of buttons whose Height is the graphics — bars", DurMul: 2, Dynpro: sceneEqualizer},
 		{Name: "snake", Approach: "a label snake on a Lissajous path, with a fading trail", Dynpro: sceneSnake},
 		{Name: "matrix", Approach: "sparse falling columns — the grid used lightly", Dynpro: sceneMatrix},
@@ -369,6 +370,50 @@ func sceneSolid(ts float64, scr *frame.Screen) {
 }
 func sceneTetra(ts float64, scr *frame.Screen) { spinSolid(scr, ts, tetraVerts, tetraEdges, 1.3, 1.4, 1.8) }
 func sceneOcta(ts float64, scr *frame.Screen)  { spinSolid(scr, ts, octaVerts, octaEdges, 1.6, 1.7, 1.1) }
+
+// sceneTornado swirls a funnel of mixed SAP widgets — buttons, icons, input
+// fields and labels — around a vertical axis: the radius is wide at the top and
+// narrows toward the bottom, each row is twisted a little more than the one
+// below and the whole column sways, so the widgets spiral like a tornado. Items
+// are drawn back-to-front and the near ones are drawn wider.
+func sceneTornado(ts float64, scr *frame.Screen) {
+	const cx, rows, perRing = 59.0, 17, 2
+	icons := []string{"@0S@", "@0Y@", "@0Z@", "@10@", "@08@", "@09@", "@0A@"}
+	labels := []string{"Go", "DIAG", "SAP", "no ABAP", "odgp", "R/3"}
+	type item struct {
+		row, col, kind, k int
+		depth             float64
+	}
+	var items []item
+	for r := 0; r < rows; r++ {
+		hf := float64(r) / float64(rows)          // 0 top .. 1 bottom
+		radius := 6.0 + (1-hf)*34.0               // wide at top, tight at the base
+		sway := math.Sin(ts*2.0+float64(r)*0.4) * 3 // the column leans and whips
+		base := ts*2.4 + float64(r)*0.75            // higher rows twist further
+		for k := 0; k < perRing; k++ {
+			a := base + float64(k)*math.Pi
+			col := Clampi(int(cx+sway+radius*math.Cos(a)), 1, 116)
+			items = append(items, item{2 + r, col, (r + k) % 4, r*perRing + k, math.Sin(a)})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].depth < items[j].depth }) // back first
+	for _, it := range items {
+		switch it.kind {
+		case 0: // button, wider up close
+			w := 4
+			if it.depth > 0 {
+				w = 8
+			}
+			scr.ButtonH(it.row, Clampi(it.col-w/2, 1, 116), w, 1, "", fmt.Sprintf("=T%d", it.k))
+		case 1: // an icon
+			scr.Output(it.row, it.col, 4, fmt.Sprintf("TI%d", it.k), icons[it.k%len(icons)], false)
+		case 2: // an input field
+			scr.Input(it.row, it.col, 5, fmt.Sprintf("TF%d", it.k), "")
+		default: // a label
+			scr.Text(it.row, it.col, labels[it.k%len(labels)])
+		}
+	}
+}
 
 func sceneEqualizer(ts float64, scr *frame.Screen) {
 	const bars, baseRow = 12, 20
