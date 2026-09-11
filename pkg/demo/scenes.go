@@ -11,6 +11,7 @@ package demo
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/oisee/open-diag-go-pro/pkg/diag"
@@ -327,8 +328,11 @@ func sceneHelix(ts float64, scr *frame.Screen) {
 			if lo > hi {
 				lo, hi = hi, lo
 			}
-			for c := lo + 1; c < hi; c++ {
-				scr.Text(1+r, c, "-")
+			// One run per rung, not one atom per character: a per-char rung made
+			// this the heaviest scene (~9 KB/frame) and overran the real GUI
+			// (KNOWLEDGE §9); as a single run it is a few hundred bytes.
+			if hi-lo > 1 {
+				scr.Text(1+r, lo+1, strings.Repeat("-", hi-lo-1))
 			}
 		}
 		ch1, ch2 := "o", "O"
