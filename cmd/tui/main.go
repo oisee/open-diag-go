@@ -248,7 +248,9 @@ type session struct {
 	pending   bool             // a PAI is out, its answer not yet drawn
 	logonSeen bool             // the screen on show is the logon screen
 	runOnce   string           // an OK-code to send on the first screen after logon
-	fkeys     map[int]string   // function-key -> OK-code bindings (--fkeys)
+	fkeys      map[int]string   // function-key -> OK-code bindings (--fkeys)
+	fkeyFuncs  map[int]int      // function-key -> function number, from the accelerator table
+	accelKeys  map[int]string   // function number -> keystroke label, from the accelerator table
 	engine    *cfw.Engine      // when set, generate control answers instead of replaying
 	palette   bool             // the command palette overlay is open
 	palLines  []string         // its lines
@@ -481,6 +483,13 @@ func (s *session) handleFrame(payload []byte) (bool, error) {
 	s.msgType, s.msg = msgType, msg
 	s.pending = false
 	s.logonSeen = isLogonScreen(items)
+	// Keep the F-key resolution current: the accelerator table is sent once at
+	// the start of a session and persists, so a frame that carries it rebinds
+	// the F-keys and their keystroke labels; one without keeps the last.
+	if fk := diag.FKeyFuncs(items); len(fk) > 0 {
+		s.fkeyFuncs = fk
+		s.accelKeys = diag.AccelLabels(items)
+	}
 	if s.interactive {
 		s.hasList = diag.HasListSegments(items)
 		s.scr = newScreenState(items)
@@ -528,7 +537,7 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	if k.kind == keyCtrlP {
 		s.palette = !s.palette
 		if s.palette {
-			s.palLines, s.palScroll = commandList(s.items), 0
+			s.palLines, s.palScroll = commandList(s.items, s.accelKeys), 0
 		}
 		s.redraw()
 		return nil
@@ -556,7 +565,7 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	if s.hasList {
 		scroll := map[keyKind]string{keyPgDn: "P+", keyPgUp: "P-", keyCtrlEnd: "P++", keyCtrlHome: "P--"}
 		if code := scroll[k.kind]; code != "" {
-			if err := s.sendPAI(code); err != nil {
+			if err := s.sendPAI(code, -1); err != nil {
 				s.msgType, s.msg = 'E', "send: "+err.Error()
 			}
 			s.redraw()
@@ -564,15 +573,29 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 		}
 	}
 	if k.kind == keyFunc {
-		code, ok := s.fkeys[k.n]
-		if !ok {
-			s.msgType, s.msg = 'W', fmt.Sprintf("F%d is not bound; map it with --fkeys %d=CODE", k.n, k.n)
+		// An explicit --fkeys binding is the user's override and fires as an
+		// OK-code string. Otherwise the screen's own accelerator table
+		// (ST_R3INFO.13) resolves the F-key to its function number, fired the
+		// way a real GUI does — through UI_EVENT_SOURCE — so F-keys work on any
+		// screen with no binding to state.
+		if code, ok := s.fkeys[k.n]; ok {
+			if err := s.sendPAI(code, -1); err != nil {
+				s.msgType, s.msg = 'E', "send: "+err.Error()
+			}
 			s.redraw()
 			return nil
 		}
-		if err := s.sendPAI(code); err != nil {
-			s.msgType, s.msg = 'E', "send: "+err.Error()
+		if fn, ok := s.fkeyFuncs[k.n]; ok {
+			if lbl := diag.FunctionLabels(s.items)[fn]; lbl != "" {
+				fmt.Fprintf(os.Stderr, "tui: F%d -> %s (fn#%d)\n", k.n, lbl, fn)
+			}
+			if err := s.sendPAI("", fn); err != nil {
+				s.msgType, s.msg = 'E', "send: "+err.Error()
+			}
+			s.redraw()
+			return nil
 		}
+		s.msgType, s.msg = 'W', fmt.Sprintf("F%d is not bound on this screen; --fkeys %d=CODE forces one", k.n, k.n)
 		s.redraw()
 		return nil
 	}
@@ -583,7 +606,7 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	case actRedraw:
 		s.redraw()
 	case actSend:
-		if err := s.sendPAI(okcode); err != nil {
+		if err := s.sendPAI(okcode, -1); err != nil {
 			s.msgType, s.msg = 'E', "send: "+err.Error()
 		}
 		s.redraw()
@@ -591,10 +614,12 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	return nil
 }
 
-// sendPAI answers the screen on show with the user's edits and OK-code. The
-// logon screen is answered at most once per run, whoever fills it in: a
-// second wrong password would count towards the user's lock.
-func (s *session) sendPAI(okcode string) error {
+// sendPAI answers the screen on show with the user's edits and either an
+// OK-code or a fired function number (uiEvent, -1 for none — the two are
+// mutually exclusive). The logon screen is answered at most once per run,
+// whoever fills it in: a second wrong password would count towards the user's
+// lock.
+func (s *session) sendPAI(okcode string, uiEvent int) error {
 	if s.pending {
 		return fmt.Errorf("previous answer still pending")
 	}
@@ -631,6 +656,7 @@ func (s *session) sendPAI(okcode string) error {
 		OKCode:  okcode,
 		Changed: s.scr.changed(),
 		Cursor:  s.scr.cursor(),
+		UIEvent: uiEvent,
 		SES:     s.ses,
 		DYNN:    s.dynn,
 		Counter: s.counter, // the counter is server-owned and pure-echoed by the client
@@ -645,7 +671,9 @@ func (s *session) sendPAI(okcode string) error {
 	s.pending = true
 	s.msgType, s.msg = 0, ""
 	what := "Enter"
-	if okcode != "" {
+	if uiEvent >= 0 {
+		what = fmt.Sprintf("fn#%d", uiEvent)
+	} else if okcode != "" {
 		what = okcode
 	}
 	fmt.Fprintf(os.Stderr, "tui: PAI sent (%s, %d changed fields, %d bytes)\n", what, len(s.scr.changed()), len(out))
@@ -663,6 +691,7 @@ func (s *session) sendOKCode(okcode string) error {
 	}
 	out, err := buildPAI(s.env, paiInput{
 		OKCode:  okcode,
+		UIEvent: -1,
 		SES:     s.ses,
 		DYNN:    s.dynn,
 		Counter: s.counter,

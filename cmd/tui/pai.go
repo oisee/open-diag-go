@@ -60,10 +60,25 @@ type paiInput struct {
 	OKCode  string      // the OK-code field: "/nse38", "=FCODE", "" for Enter
 	Changed []diag.Atom // the input atoms the user edited, values set
 	Cursor  *diag.Atom  // the field the cursor is on, nil when none
+	UIEvent int         // a fired function number (UI_EVENT_SOURCE), -1 for none
 	SES     []byte      // the session id the server sent last
 	DYNN    []byte      // the server's last DYNN.01 (dynpro descriptor)
 	Counter uint32      // ST_USER.26
 	Stat    byte        // header mode-stat to echo (0xF0 after pushed frames)
+}
+
+// uiEventSource builds the APPL UI_EVENT.UI_EVENT_SOURCE (0x0f/0x01) value that
+// fires function number n, as a real GUI sends it on a function key: a fixed
+// event descriptor with the number at byte 5 and the cursor's row and column
+// (little-endian) at bytes 10..13. Read off captures/f8sniff.jsonl (F8 -> 8,
+// F3 -> 3), where those two 16-bit fields equalled the frame's DYNT.0b cursor.
+func uiEventSource(n int, cursor *diag.Atom) []byte {
+	v := []byte{0x0a, 0x00, 0x07, 0x00, 0x01, byte(n), 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x00}
+	if cursor != nil {
+		binary.LittleEndian.PutUint16(v[10:], uint16(cursor.Row))
+		binary.LittleEndian.PutUint16(v[12:], uint16(cursor.Col))
+	}
+	return v
 }
 
 // buildPAI lays the client frame for one action.
@@ -99,7 +114,9 @@ func buildPAI(e *envTemplate, in paiInput, compress bool) ([]byte, error) {
 	if err := add(diag.ItemAPPL, 0x06, 0x23, true); err != nil { // ST_R3INFO.SYSNAME
 		return nil, err
 	}
-	if in.OKCode != "" {
+	if in.OKCode != "" && in.UIEvent < 0 {
+		// A fired function key carries its number in UI_EVENT_SOURCE below, not
+		// as an OK-code string, so the two are mutually exclusive.
 		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x0c, SID: 0x04, Value: []byte(in.OKCode)})
 	}
 	for _, sid := range []byte{0x09, 0x1d, 0x0f, 0x19} { // ST_USER block
@@ -126,6 +143,11 @@ func buildPAI(e *envTemplate, in paiInput, compress bool) ([]byte, error) {
 		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x09, SID: 0x02, Value: diag.EncodeDyntAtoms(in.Changed)})
 	} else {
 		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x09, SID: 0x0a})
+	}
+	// A fired function key rides as UI_EVENT_SOURCE after the changed fields
+	// and before the cursor, the way a real GUI orders them.
+	if in.UIEvent >= 0 {
+		items = append(items, diag.Item{Type: diag.ItemAPPL, ID: 0x0f, SID: 0x01, Value: uiEventSource(in.UIEvent, in.Cursor)})
 	}
 	if in.Cursor != nil {
 		c := make([]byte, 10)

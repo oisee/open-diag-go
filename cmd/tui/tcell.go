@@ -139,7 +139,7 @@ func (s *session) handleMouse(e *tcell.EventMouse) {
 			s.scr.focus = i
 			s.scr.syncCaret()
 			if f.kind == fButton {
-				if err := s.sendPAI(f.fcode); err != nil {
+				if err := s.sendPAI(f.fcode, -1); err != nil {
 					s.msgType, s.msg = 'E', "send: "+err.Error()
 				}
 			}

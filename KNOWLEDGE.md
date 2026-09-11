@@ -192,10 +192,24 @@ OK-code string lives only in the ABAP PF-status, resolved server-side.
   the GUI sends N and we decode N→our action ("up"). We cannot make it emit a
   chosen `=STRING` (no such wire field), but we don't need one.
 
-**Open gap (narrowed):** which C→S item carries the fired number N was never
-captured (no bare menu/key press in the capture — SE38 went through the TextEdit
-control). One sniff closes it: on Easy Access, press **F8**/**F11** or click a
-dropdown item with nothing else focused, and read that single C→S frame.
+**Gap CLOSED (f8sniff capture).** The fired number N rides in **`APPL
+UI_EVENT.UI_EVENT_SOURCE`** (id `0x0f` sid `0x01`), a 16-byte value, ordered
+after the changed-fields DYNT_ATOM and before the DYNT.0b cursor, with **no
+VARINFO.04**:
+
+	0a 00  07 00  01  NN  00 00 00 00  RR RR  CC CC  01 00
+	class  source flag fn# ─zero──────  cur.row cur.col tail
+
+`NN` (byte 5) = the function number; `RR RR`/`CC CC` (bytes 10-13, **little-
+endian**) = the cursor's row/col (they equalled the DYNT.0b cursor in every
+sample); the rest is fixed. N **is** the MNUENTRY `Code`, resolved from the
+keystroke through the accelerator table `ST_R3INFO.13` (F8→8, F3→3, Ctrl+S→11).
+So a client fires any F-key with no per-screen binding: read `.13` once (it is
+sent at session start and persists), map the key to its function number, emit
+`UI_EVENT_SOURCE`. Implemented: `diag.ParseAccelTable`/`FKeyFuncs`/`AccelLabels`,
+`cmd/tui` `uiEventSource` + `session.fkeyFuncs` (the old `--fkeys` string path
+stays as an explicit override). The typed OK-code string in VARINFO.04 also
+works (A4H accepts it) but is not what a GUI does for a function key.
 
 **Reuse works today:** splicing our fields DYNT_ATOM into a captured logon frame
 inherits its real MNUENTRY, so the menu bar, `New password` and status are

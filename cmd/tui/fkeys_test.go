@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"encoding/hex"
+	"testing"
+
+	"github.com/oisee/open-diag-go-pro/pkg/diag"
+)
 
 func TestParseFKeys(t *testing.T) {
 	m := parseFKeys("8=STRT,3==BACK,12=/n, 5 = ONLI ,bad,99=X,0=Y,7=")
@@ -26,5 +32,29 @@ func TestParseFKeys(t *testing.T) {
 	}
 	if len(m) != 4 {
 		t.Errorf("got %d bindings, want 4: %v", len(m), m)
+	}
+}
+
+// The UI_EVENT_SOURCE bytes match a real GUI's function-key frames
+// (captures/f8sniff.jsonl): the function number at byte 5 and the cursor's
+// row/col little-endian at 10..13. F8 on RS38M-PROGRAMM (row 2, col 14) gave
+// 0a00070001 08 0000000002000e000100.
+func TestUIEventSource(t *testing.T) {
+	cur := &diag.Atom{Row: 2, Col: 14}
+	got := uiEventSource(8, cur)
+	want, _ := hex.DecodeString("0a00070001080000000002000e000100")
+	if !bytes.Equal(got, want) {
+		t.Errorf("F8 event = %x, want %x", got, want)
+	}
+	// F3 from the same field: only byte 5 changes.
+	got3 := uiEventSource(3, cur)
+	want3, _ := hex.DecodeString("0a00070001030000000002000e000100")
+	if !bytes.Equal(got3, want3) {
+		t.Errorf("F3 event = %x, want %x", got3, want3)
+	}
+	// No cursor: the position fields stay zero, the number still lands.
+	g0 := uiEventSource(3, nil)
+	if g0[5] != 3 || g0[10] != 0 || g0[12] != 0 {
+		t.Errorf("no-cursor event = %x, want number at [5], zero position", g0)
 	}
 }

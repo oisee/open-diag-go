@@ -72,6 +72,34 @@ func ParseMenuEntries(value []byte) []MenuEntry {
 	return out
 }
 
+// FunctionLabels maps a function number to its caption, read from the GUI
+// status: the function-key list (MNUENTRY.04), the toolbar (.03) and the menus
+// (.02) all carry the same numbers as their Code. It lets a client name a fired
+// function (F8 -> "Execute") for the user.
+func FunctionLabels(items []Item) map[int]string {
+	m := map[int]string{}
+	// Scan the function-key list first, then the toolbar, then the menus: a
+	// function's action name (F8 = "Execute") lives in .04/.03, while the menu
+	// (.02) may repeat the same code under a wordier synonym ("Direct
+	// Processing"). The first caption found for a code wins.
+	for _, sid := range []byte{0x04, 0x03, 0x02} {
+		for _, it := range items {
+			if it.Type != ItemAPPL4 || it.ID != 0x0b || it.SID != sid {
+				continue
+			}
+			for _, e := range ParseMenuEntries(it.Value) {
+				if e.Separator() || e.Text == "" || e.Code == 0 {
+					continue
+				}
+				if _, ok := m[int(e.Code)]; !ok {
+					m[int(e.Code)] = e.Text
+				}
+			}
+		}
+	}
+	return m
+}
+
 // ParseStatusMessage reads a VARINFO.03 status message (the inverse of
 // StatusMessage): the message type (S, W, E, I) and the text. The wire form
 // is type, NUL, class padded with spaces, NUL, number, NUL, a space, NUL,

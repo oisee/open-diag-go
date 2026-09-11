@@ -10,13 +10,16 @@ import (
 // The command palette: the whole command set a screen offers, read straight
 // from its GUI status — the application toolbar (MNUENTRY.03), the function
 // keys (.04) and the dropdown menus (.02). It is a reference overlay: it shows
-// what the screen can do and how each command is labelled. Firing a command
-// still needs its function code, which the status does not carry for menu and
-// F-key entries (see --fkeys and KNOWLEDGE.md §8); pushbuttons on the canvas
-// carry theirs and are activated directly.
+// what the screen can do, how each command is labelled, and the keystroke that
+// fires it (joined from the screen's accelerator table, ST_R3INFO.13). A
+// function key listed here works directly; the client resolves it to its
+// function number and fires it (see session.fkeyFuncs, UI_EVENT_SOURCE).
 
-// commandList builds the palette lines from a screen's MNUENTRY items.
-func commandList(items []diag.Item) []string {
+// commandList builds the palette lines from a screen's MNUENTRY items. Each
+// entry is annotated with the keystroke that fires it, joined from the screen's
+// accelerator table by function number (so a toolbar or menu command shows its
+// F-key or Ctrl-shortcut, and F-keys are discoverable without a manual binding).
+func commandList(items []diag.Item, keys map[int]string) []string {
 	var out []string
 	add := func(sid byte, label string) {
 		for _, it := range items {
@@ -28,7 +31,9 @@ func commandList(items []diag.Item) []string {
 					continue
 				}
 				line := fmt.Sprintf("%-9s %s", label, e.Text)
-				if e.Accel != 0 {
+				if k := keys[int(e.Code)]; k != "" {
+					line += "  [" + k + "]"
+				} else if e.Accel != 0 {
 					line += fmt.Sprintf("  (Alt+%c)", e.Accel)
 				}
 				if e.Tooltip != "" && e.Tooltip != e.Text {
