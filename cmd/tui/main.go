@@ -489,6 +489,16 @@ func (s *session) handleFrame(payload []byte) (bool, error) {
 			s.counter = binary.BigEndian.Uint32(it.Value)
 		}
 	}
+	// Keep the F-key resolution current from ANY frame that carries the
+	// accelerator table (ST_R3INFO.13), not only a drawn screen — it is sent
+	// once at session start (often on a status-only frame) and persists, so
+	// parsing it here, before the screen/early-return logic below, is what makes
+	// F-keys resolve on every later screen.
+	if fk := diag.FKeyFuncs(items); len(fk) > 0 {
+		s.fkeyFuncs = fk
+		s.accelKeys = diag.AccelLabels(items)
+		fmt.Fprintf(os.Stderr, "tui: accelerator table: %d F-keys bound (F8->fn#%d)\n", len(fk), fk[8])
+	}
 
 	if s.logon {
 		if err := s.answerLogon(items); err != nil {
@@ -531,13 +541,6 @@ func (s *session) handleFrame(payload []byte) (bool, error) {
 	s.msgType, s.msg = msgType, msg
 	s.pending = false
 	s.logonSeen = isLogonScreen(items)
-	// Keep the F-key resolution current: the accelerator table is sent once at
-	// the start of a session and persists, so a frame that carries it rebinds
-	// the F-keys and their keystroke labels; one without keeps the last.
-	if fk := diag.FKeyFuncs(items); len(fk) > 0 {
-		s.fkeyFuncs = fk
-		s.accelKeys = diag.AccelLabels(items)
-	}
 	if s.interactive {
 		s.hasList = diag.HasListSegments(items)
 		s.scr = newScreenState(items)
@@ -635,29 +638,7 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 		}
 	}
 	if k.kind == keyFunc {
-		// An explicit --fkeys binding is the user's override and fires as an
-		// OK-code string. Otherwise the screen's own accelerator table
-		// (ST_R3INFO.13) resolves the F-key to its function number, fired the
-		// way a real GUI does — through UI_EVENT_SOURCE — so F-keys work on any
-		// screen with no binding to state.
-		if code, ok := s.fkeys[k.n]; ok {
-			if err := s.sendPAI(code, -1); err != nil {
-				s.msgType, s.msg = 'E', "send: "+err.Error()
-			}
-			s.redraw()
-			return nil
-		}
-		if fn, ok := s.fkeyFuncs[k.n]; ok {
-			if lbl := diag.FunctionLabels(s.items)[fn]; lbl != "" {
-				fmt.Fprintf(os.Stderr, "tui: F%d -> %s (fn#%d)\n", k.n, lbl, fn)
-			}
-			if err := s.sendPAI("", fn); err != nil {
-				s.msgType, s.msg = 'E', "send: "+err.Error()
-			}
-			s.redraw()
-			return nil
-		}
-		s.msgType, s.msg = 'W', fmt.Sprintf("F%d is not bound on this screen; --fkeys %d=CODE forces one", k.n, k.n)
+		s.fireFKey(k.n)
 		s.redraw()
 		return nil
 	}
@@ -668,12 +649,40 @@ func (s *session) handleKey(k key, cancel context.CancelFunc) error {
 	case actRedraw:
 		s.redraw()
 	case actSend:
-		if err := s.sendPAI(okcode, -1); err != nil {
+		// "F8" typed at the OK-code prompt fires that function key, so it works
+		// in a terminal that steals the real F-keys (macOS media keys, Ctrl+P
+		// for Print, …). Anything else is a genuine OK-code.
+		if n, ok := fkeyStep(okcode); ok {
+			s.fireFKey(n)
+		} else if err := s.sendPAI(okcode, -1); err != nil {
 			s.msgType, s.msg = 'E', "send: "+err.Error()
 		}
 		s.redraw()
 	}
 	return nil
+}
+
+// fireFKey fires function key n: an explicit --fkeys binding as an OK-code
+// string, else the screen's accelerator table resolves it to its function
+// number (fired through UI_EVENT_SOURCE, as a real GUI does). It sets a status
+// message when the key is not bound.
+func (s *session) fireFKey(n int) {
+	if code, ok := s.fkeys[n]; ok {
+		if err := s.sendPAI(code, -1); err != nil {
+			s.msgType, s.msg = 'E', "send: "+err.Error()
+		}
+		return
+	}
+	if fn, ok := s.fkeyFuncs[n]; ok {
+		if lbl := diag.FunctionLabels(s.items)[fn]; lbl != "" {
+			fmt.Fprintf(os.Stderr, "tui: F%d -> %s (fn#%d)\n", n, lbl, fn)
+		}
+		if err := s.sendPAI("", fn); err != nil {
+			s.msgType, s.msg = 'E', "send: "+err.Error()
+		}
+		return
+	}
+	s.msgType, s.msg = 'W', fmt.Sprintf("F%d is not bound on this screen; --fkeys %d=CODE forces one", n, n)
 }
 
 // sendPAI answers the screen on show with the user's edits and either an

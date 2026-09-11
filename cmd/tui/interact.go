@@ -376,7 +376,7 @@ func (s *screenState) markFocus(g *tui.Grid, canvasRow int) (row, col int) {
 // note is the status-bar hint for the interactive mode.
 func (s *screenState) note() string {
 	if s.inCmd {
-		return "Enter sends  Esc cancels"
+		return "Enter sends  (type F8, F3, … to fire that key)  Esc cancels"
 	}
 	f := s.focused()
 	if f != nil {
