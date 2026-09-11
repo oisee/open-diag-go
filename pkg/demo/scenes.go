@@ -45,21 +45,24 @@ func crossed(prevTs, ts, period, at float64) bool {
 	return math.Floor((ts-at)/period) > math.Floor((prevTs-at)/period)
 }
 
-// fireworksSound sounds each rocket exactly on its two visible moments: a
-// launch tick (I) at phase 0, when the rocket leaves the ground, and a boom (E)
-// at phase 0.5, when it bursts — for every one of the four rockets. No delay:
-// the beep lands on the frame the event is drawn, so it reads as tight sync,
-// not a random rhythm. The rocket i's phase is mod(ts + i*0.9, period)/period,
-// so phase 0 is at ts = k*period - i*0.9 and phase 0.5 at + period/2.
+// fireworksSound sounds each rocket exactly on three visible moments, using the
+// three distinct GUI beeps: a launch (S) at phase 0 as it leaves the ground, a
+// boom (E) at phase 0.5 as it bursts, and a crackle (W) at phase 0.75 as the
+// sparks spread and fall — for every one of the four rockets. No delay: the
+// beep lands on the drawn frame, so it reads as tight sync. Rocket i's phase is
+// mod(ts + i*0.9, period)/period.
 func fireworksSound(prevTs, ts float64) byte {
 	for i := 0; i < 4; i++ {
 		period := 2.2 + float64(i)*0.5
 		off := float64(i) * 0.9
 		if crossed(prevTs, ts, period, -off) {
-			return 'I' // launch, phase 0
+			return 'S' // launch, phase 0
 		}
 		if crossed(prevTs, ts, period, period/2-off) {
 			return 'E' // burst, phase 0.5
+		}
+		if crossed(prevTs, ts, period, period*0.75-off) {
+			return 'W' // crackle, phase 0.75
 		}
 	}
 	return 0
