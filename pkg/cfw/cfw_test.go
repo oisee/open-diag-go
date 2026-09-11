@@ -91,6 +91,33 @@ func TestDecodeEasyAccessCall(t *testing.T) {
 		t.Error("no _RESULT descriptor slots found")
 	}
 
+	vals := ParseSvarsValues(values)
+	if len(vals) != 145 {
+		t.Errorf("value-pool records = %d, want 145", len(vals))
+	}
+	poolResults := 0
+	for _, v := range vals {
+		if v.IsResult {
+			poolResults++
+		}
+	}
+	if poolResults == 0 {
+		t.Error("no _RESULT slots in the value pool")
+	}
+	// The first descriptor _RESULT pointer (4) resolves to value-pool record 3,
+	// which is a _RESULT slot.
+	for _, r := range ds {
+		if r.IsResult() {
+			slot := ResultSlot(r.Pointer)
+			if slot < 0 || slot >= len(vals) {
+				t.Errorf("_RESULT pointer %q -> slot %d out of range", r.Pointer, slot)
+			} else if !vals[slot].IsResult {
+				t.Errorf("_RESULT pointer %q -> value rec %d, which is not a result slot", r.Pointer, slot)
+			}
+			break
+		}
+	}
+
 	e := NewEngine()
 	minted := e.Run(vs)
 	if len(minted) != creates {

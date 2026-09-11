@@ -136,6 +136,43 @@ func ParseSvarsDesc(b []byte) []SvarsRec {
 	return out
 }
 
+// SvarsVal is one record of the SVARS value pool: the value carried in a slot,
+// or a _RESULT output slot the frontend fills with a handle.
+type SvarsVal struct {
+	IsResult bool   // the slot the frontend writes a minted handle into
+	Value    string // the value, with the 9-zero prefix stripped ("101", "O2", …)
+}
+
+// ParseSvarsValues splits the SVARS value pool into its 337-byte records. Each
+// carries a value at offset 32 as "000000000<value>" (a handle like O2 has no
+// separating space; a plain value like 101 does); a _RESULT record marks its
+// name at offset 0.
+func ParseSvarsValues(b []byte) []SvarsVal {
+	var out []SvarsVal
+	for off := 0; off+valueRecLen <= len(b); off += valueRecLen {
+		rec := b[off : off+valueRecLen]
+		name := strings.TrimSpace(string(rec[0:valNameCol]))
+		val := strings.TrimSpace(string(rec[valNameCol:]))
+		val = strings.TrimSpace(strings.TrimPrefix(val, "000000000"))
+		out = append(out, SvarsVal{IsResult: name == "_RESULT", Value: val})
+	}
+	return out
+}
+
+// ResultSlot resolves a descriptor _RESULT pointer (1-based, as ParseSvarsDesc
+// returns it) to its index in the value-pool records, or -1.
+func ResultSlot(pointer string) int {
+	var n int
+	if _, err := fmt.Sscanf(pointer, "%d", &n); err != nil || n < 1 {
+		return -1
+	}
+	return n - 1
+}
+
+// valNameCol is where a value-pool record's value begins; [0:valNameCol] holds
+// the _RESULT marker when present.
+const valNameCol = 32
+
 // Engine holds one session's OLE automation state: the monotonic handle
 // counter and the objId->handle map. It is what replaces blind answer replay.
 type Engine struct {
