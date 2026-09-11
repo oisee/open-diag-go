@@ -28,6 +28,53 @@ const LEDRows, LEDCols = 10, 22
 // ledEffectNames names the three effects, indexed by effect number.
 var ledEffectNames = []string{"plasma", "rings", "ball"}
 
+// triF bounces a float value between 0 and span, like Triangle but continuous,
+// so a ball's centre moves at sub-cell precision.
+func triF(x, span float64) float64 {
+	if span <= 0 {
+		return 0
+	}
+	p := math.Mod(x, 2*span)
+	if p < 0 {
+		p += 2 * span
+	}
+	if p > span {
+		p = 2*span - p
+	}
+	return p
+}
+
+// ballCell renders one LED of a bouncing ball with sub-pixel anti-aliasing: the
+// ball is a circle at a float position and radius; each logical cell samples a
+// 3x3 sub-grid and its glyph density is the fraction of samples inside the
+// circle, so the edge is a soft ramp and the ball stays round and morphs
+// smoothly as it drifts between cells (rather than a blocky hard circle).
+func ballCell(lr, lc int, t float64) (byte, byte) {
+	bx := triF(t*2.6, float64(LEDCols-1))
+	by := triF(t*1.7, float64(LEDRows-1))
+	const radius, n = 3.2, 3
+	inside := 0
+	for sy := 0; sy < n; sy++ {
+		for sx := 0; sx < n; sx++ {
+			x := float64(lc) + (float64(sx)+0.5)/n - 0.5
+			y := float64(lr) + (float64(sy)+0.5)/n - 0.5
+			if math.Hypot(x-bx, (y-by)*2) < radius { // *2 corrects the cell aspect
+				inside++
+			}
+		}
+	}
+	cov := float64(inside) / float64(n*n)
+	if cov == 0 {
+		return diag.ColKey, ledRamp[0] // dark field
+	}
+	di := Clampi(int(cov*float64(len(ledRamp)-1)+0.5), 1, len(ledRamp)-1)
+	var col byte = diag.ColNegative // bright core
+	if cov < 0.55 {
+		col = diag.ColTotal // dimmer, anti-aliased rim
+	}
+	return col, ledRamp[di]
+}
+
 // ledCell is the colour and density glyph for one logical LED, for the current
 // effect at time t.
 func ledCell(lr, lc int, t float64, eff int) (byte, byte) {
@@ -39,17 +86,8 @@ func ledCell(lr, lc int, t float64, eff int) (byte, byte) {
 		gi := Clampi(int(v*float64(len(ledSpectrum))), 0, len(ledSpectrum)-1)
 		di := Clampi(int(v*float64(len(ledRamp))), 0, len(ledRamp)-1)
 		return ledSpectrum[gi], ledRamp[di]
-	case 2: // a bright ball bouncing on a dark field
-		bx := Triangle(t*9.0, LEDCols-1)
-		by := Triangle(t*5.0, LEDRows-1)
-		d := math.Hypot(float64(lc-bx), float64(lr-by)*2)
-		if d < 2.5 {
-			return diag.ColNegative, ledRamp[len(ledRamp)-1]
-		}
-		if d < 5.0 {
-			return diag.ColTotal, ledRamp[len(ledRamp)/2]
-		}
-		return diag.ColKey, ledRamp[0]
+	case 2: // a bright ball bouncing on a dark field, anti-aliased
+		return ballCell(lr, lc, t)
 	default: // plasma: hue and luminance from two sine fields
 		fr, fc := float64(lr), float64(lc)
 		hv := (math.Sin(fc/3.0+t) + math.Sin(fr/2.0-t) + math.Sin((fc+fr)/4.0+t*1.3) + 3.0) / 6.0
