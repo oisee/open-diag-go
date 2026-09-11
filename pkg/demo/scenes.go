@@ -31,6 +31,36 @@ type Scene struct {
 	Dynpro func(ts float64, scr *frame.Screen)
 	// List draws the scene as a classic-list frame; nil for a dynpro scene.
 	List func(ts float64) []diag.ListSegment
+	// Sound, when set, drives event-based audio: given the time span of one
+	// frame (prevTs..ts within this scene), it returns the status-message type
+	// whose GUI beep should sound (0 for silence) — a boom on a firework burst,
+	// say. Natural and sparse: the beep marks a thing that happened, not a
+	// metronome.
+	Sound func(prevTs, ts float64) byte
+}
+
+// crossed reports whether an event that recurs every period seconds at the
+// given offset landed inside (prevTs, ts].
+func crossed(prevTs, ts, period, at float64) bool {
+	return math.Floor((ts-at)/period) > math.Floor((prevTs-at)/period)
+}
+
+// fireworksSound plays each rocket's burst as two delayed beeps, the way a real
+// firework's sound lags its flash: a boom (E) ~0.15s after the visual burst and
+// a crackle (W) ~0.42s after it. The burst itself is at phase 0.5, i.e. time
+// k*period + period/2 - off, matching sceneFireworks.
+func fireworksSound(prevTs, ts float64) byte {
+	for i := 0; i < 4; i++ {
+		period := 2.2 + float64(i)*0.5
+		burst := period/2 - float64(i)*0.9
+		if crossed(prevTs, ts, period, burst+0.15) {
+			return 'E' // boom, a couple frames after the flash
+		}
+		if crossed(prevTs, ts, period, burst+0.42) {
+			return 'W' // crackle, a few frames later
+		}
+	}
+	return 0
 }
 
 // Scenes are the acts, ordered from the lightest frame to the heaviest so the
@@ -49,7 +79,7 @@ func Scenes() []Scene {
 		{Name: "equalizer", Approach: "a row of buttons whose Height is the graphics — bars", Dynpro: sceneEqualizer},
 		{Name: "snake", Approach: "a label snake on a Lissajous path, with a fading trail", Dynpro: sceneSnake},
 		{Name: "matrix", Approach: "sparse falling columns — the grid used lightly", Dynpro: sceneMatrix},
-		{Name: "fireworks", Approach: "rockets that rise and burst into gravity-fed sparks", Dur: 9 * time.Second, Dynpro: sceneFireworks},
+		{Name: "fireworks", Approach: "rockets that rise and burst into gravity-fed sparks", Dur: 9 * time.Second, Dynpro: sceneFireworks, Sound: fireworksSound},
 		{Name: "helix", Approach: "a double helix twisting in place, strands and rungs", Dynpro: sceneHelix},
 		{Name: "plasma", Approach: "LED plasma in the list channel — colour + letters", List: led(0)},
 		{Name: "rings", Approach: "LED rings in the list channel", List: led(1)},

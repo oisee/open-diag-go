@@ -920,6 +920,12 @@ func withSound(items []diag.Item, n int) []diag.Item {
 	if t == 0 {
 		return items
 	}
+	return insertStatus(items, t)
+}
+
+// insertStatus puts a status message (whose GUI sound is type t) just before
+// EOM, so the client plays that sound with the frame.
+func insertStatus(items []diag.Item, t byte) []diag.Item {
 	msg := diag.StatusMessage(t, "odgp: now playing")
 	out := make([]diag.Item, 0, len(items)+1)
 	for _, it := range items {
@@ -1123,6 +1129,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	}
 	var start time.Time
 	lastScene := -1
+	prevTs := 0.0
 	return func(n int) []byte {
 		if start.IsZero() {
 			start = time.Now()
@@ -1140,6 +1147,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		if idx != lastScene {
 			log("scene %d/%d: %s (%s)", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach)
 			lastScene = idx
+			prevTs = ts // no spurious sound event across a scene boundary
 		}
 		// The LED scenes render in the list channel via the list wrapper. The
 		// effect time is quantised to ~180ms steps, so consecutive 80ms ticks
@@ -1169,7 +1177,17 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		}
 		out := append([]diag.Item{}, base...)
 		out[atomIdx].Value = scr.Encode()
-		out = withSound(out, n)
+		// Sound: a scene with events (a firework burst) drives its own beeps
+		// off the frame's time span; otherwise fall back to the beat / single
+		// beep. Event audio is natural and sparse — it marks what happened.
+		if sfn := scenes[idx].Sound; sfn != nil {
+			if t := sfn(prevTs, ts); t != 0 {
+				out = insertStatus(out, t)
+			}
+		} else {
+			out = withSound(out, n)
+		}
+		prevTs = ts
 		msg, err := diag.EncodeMessage(h, out, false)
 		if err != nil {
 			return nil
