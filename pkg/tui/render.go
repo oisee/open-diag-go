@@ -133,11 +133,14 @@ func extent(a diag.Atom) (rows, cols int) {
 
 // Render places every drawable atom onto a grid at least minRows by minCols.
 // The grid is grown, never shrunk, so that no atom is clipped off the bottom
-// or the right; a caller with a smaller terminal clips at draw time with
-// Clip. A minRows or minCols below one falls back to the default dynpro size.
-// Frames are drawn first and buttons second, so the fields inside a group
-// box and the caption on a button overprint their outline and face, the way
-// the GUI layers them.
+// or the right; a caller with a smaller terminal clips at draw time with Clip.
+// A minRows or minCols below one falls back to the default dynpro size.
+//
+// Buttons draw first, then the fields and labels, then FRAMES LAST — a group
+// box's outline stays a clean rectangle even when a subscreen's text is wider
+// than the box and spills past its right edge (the SAP GUI keeps the box outline
+// and lets the text stick out; drawing frames first let that text erase the
+// border). Content genuinely inside a box is inset and never touches the border.
 func Render(atoms []diag.Atom, minRows, minCols int) *Grid {
 	rows, cols := minRows, minCols
 	if rows < 1 {
@@ -157,17 +160,17 @@ func Render(atoms []diag.Atom, minRows, minCols int) *Grid {
 	}
 	g := newGrid(rows, cols, Style{})
 	for _, a := range atoms {
-		if a.EType == diag.AtomFrame {
-			g.drawAtom(a)
-		}
-	}
-	for _, a := range atoms {
 		if a.EType == diag.AtomPushbutton {
 			g.drawAtom(a)
 		}
 	}
 	for _, a := range atoms {
 		if a.EType != diag.AtomFrame && a.EType != diag.AtomPushbutton {
+			g.drawAtom(a)
+		}
+	}
+	for _, a := range atoms {
+		if a.EType == diag.AtomFrame {
 			g.drawAtom(a)
 		}
 	}
