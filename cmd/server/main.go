@@ -1412,10 +1412,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 			// had no list frame to wrap; draw a note instead of panicking.
 			scr.Text(2, 2, "LED effect needs the capture's list frame")
 		}
-		if !scenes[idx].Bare {
-			scr.Text(24, 1, fmt.Sprintf("scene %d/%d  %-9s  approach: %s", idx+1, len(scenes), scenes[idx].Name, scenes[idx].Approach))
-			scr.Text(25, 1, "F3/Back or close the window to stop")
-		}
+		// No on-screen captions — just the effect.
 		out := append([]diag.Item{}, base...)
 		out[atomIdx].Value = scr.Encode()
 		// Sound: a scene with events (a firework burst) drives its own beeps

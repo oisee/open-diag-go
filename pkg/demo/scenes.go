@@ -11,6 +11,7 @@ package demo
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"sort"
 	"strings"
 	"time"
@@ -98,6 +99,8 @@ func Scenes() []Scene {
 		{Name: "starfield", Approach: "the whole character grid redrawn every frame", Dynpro: sceneStars},
 		{Name: "icons", Approach: "a grid of real SAP icons, drawn via output fields", Dynpro: sceneIcons},
 		{Name: "greetings", Approach: "a revolving drum of greets — names swing in, zoom at the front, turn away", Dynpro: sceneGreetings},
+		{Name: "greetz", Approach: "the tornado made of greets — buttons grow taller, input fields spread wider, all spinning", Dynpro: sceneGreetz},
+		{Name: "greetstorm", Approach: "the looping finale — a tornado of junk eases into a slow cylinder of greetings and back, forever", Dur: 80 * time.Second, Dynpro: sceneGreetstorm},
 	}
 }
 
@@ -452,6 +455,253 @@ func sceneTornado(ts float64, scr *frame.Screen) {
 	}
 }
 
+func clampf(x, lo, hi float64) float64 {
+	if x < lo {
+		return lo
+	}
+	if x > hi {
+		return hi
+	}
+	return x
+}
+
+// sceneGreetstorm is the looping finale: a tornado of flying junk that eases into
+// a slow cylinder of greetings and back again, forever. One morph value m
+// ping-pongs 0..1 (0 = tornado, 1 = greets) and every parameter rides it — the
+// funnel straightens into a cylinder, the spin slows, the camera stops pitching
+// and parks near the side, the flying junk thins out and the greeting names grow
+// in. Reverse, and the junk floods back and the names fade — a breathing storm.
+func sceneGreetstorm(ts float64, scr *frame.Screen) {
+	const (
+		cx, centerRow      = 59.0, 13.0
+		rows, perRing      = 17, 2
+		vAspect, camDist   = 0.40, 120.0
+		spinFast, spinSlow = 4.5, 1.1
+	)
+	icons := []string{"@0S@", "@0Y@", "@0Z@", "@10@", "@08@", "@09@", "@0A@"}
+	labels := []string{"Go", "DIAG", "SAP", "no ABAP", "odgp", "R/3"}
+
+	// The loop has four phases: a tornado, a ramp into the greetings, a long
+	// plateau where the cylinder shows two greets at a time and swaps them one by
+	// one, then a ramp back to the tornado — once every greet has passed.
+	n := len(greetNames)
+	const dTor, dRamp, hold, youBeats = 5.0, 6.0, 1.0, 3
+	dPlat := float64(n+youBeats) * hold // the greets, then a few beats of YOU!!
+	cycle := dTor + 2*dRamp + dPlat
+	tc := math.Mod(ts, cycle)
+	cycles := math.Floor(ts / cycle)
+	var m float64
+	step := 0 // which swap we are on within the plateau
+	switch {
+	case tc < dTor:
+		m = 0
+	case tc < dTor+dRamp:
+		m = smoothstep((tc - dTor) / dRamp)
+	case tc < dTor+dRamp+dPlat:
+		m = 1
+		step = int((tc - dTor - dRamp) / hold)
+	default:
+		m = smoothstep((cycle - tc) / dRamp)
+		step = n // all greets shown — the finale
+	}
+	// After every greet has passed, the whole cylinder turns to YOU!! at once.
+	finale := step >= n
+	// The two greets on show: groups A and B take turns advancing, so one name
+	// swaps at a time while the other holds.
+	aIdx := (2 * ((step + 1) / 2)) % n
+	bIdx := (2*(step/2) + 1) % n
+	// Spin angle: fast in the tornado, slow on the plateau, integrated per phase
+	// (ramps at the mean rate) so it never jumps, even across the loop seam.
+	midRate := (spinFast + spinSlow) / 2
+	perCycle := spinFast*dTor + midRate*dRamp + spinSlow*dPlat + midRate*dRamp
+	var partial float64
+	switch {
+	case tc < dTor:
+		partial = spinFast * tc
+	case tc < dTor+dRamp:
+		partial = spinFast*dTor + midRate*(tc-dTor)
+	case tc < dTor+dRamp+dPlat:
+		partial = spinFast*dTor + midRate*dRamp + spinSlow*(tc-dTor-dRamp)
+	default:
+		partial = spinFast*dTor + midRate*dRamp + spinSlow*dPlat + midRate*(tc-dTor-dRamp-dPlat)
+	}
+	base0 := cycles*perCycle + partial
+	// Tilt: the tornado's rising-falling pitch, easing to a fixed ~5° side view.
+	tTorn := 1.15 * 0.5 * (1 - math.Cos(ts*0.32))
+	tilt := tTorn*(1-m) + 0.087*m
+	sinP, cosP := math.Sin(tilt), math.Cos(tilt)
+
+	type item struct {
+		row, col, kind, idx int
+		depth, nf           float64
+		greet               bool
+	}
+	var items []item
+	for r := 0; r < rows; r++ {
+		hf := float64(r) / float64(rows)
+		radius := (6.0+(1-hf)*30.0)*(1-m) + 24.0*m // funnel -> cylinder
+		swayAmp := 6.0*(1-m) + 2.0*m
+		swayFreq := 2.6*(1-m) + 1.3*m
+		sway := math.Sin(ts*swayFreq+float64(r)*0.4) * swayAmp
+		// Angle offset per height: tornado's descending ramp (a spiral) eases into
+		// a scattered permutation (names populate the cylinder, no vortex).
+		angOff := (float64(r)*0.75)*(1-m) + (float64((r*5)%rows)/float64(rows)*2*math.Pi)*m
+		py := (8.0 - float64(r)) * 2.4
+		for k := 0; k < perRing; k++ {
+			a := base0 + angOff + float64(k)*math.Pi
+			px := radius * math.Cos(a)
+			pz := radius * math.Sin(a)
+			yUp := py*cosP + pz*sinP
+			zDepth := pz*cosP - py*sinP
+			p := camDist / (camDist - zDepth)
+			col := Clampi(int(cx+sway+px*p), 1, 116)
+			row := Clampi(int(centerRow-yUp*p*vAspect), 1, 25)
+			idx := r*perRing + k
+			items = append(items, item{row, col, idx % 4, idx, clampf(zDepth/45.0, -1, 1), 0, idx%3 == 0})
+		}
+	}
+	for i := range items {
+		items[i].nf = (items[i].depth + 1) / 2
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].depth < items[j].depth }) // back first
+	for _, it := range items {
+		if it.greet {
+			// A greeting: the name grows in with m, letter-spaced by depth.
+			gap := 0
+			if it.nf > 0.55 && m > 0.6 {
+				gap = 1
+			}
+			if it.nf > 0.85 && m > 0.8 {
+				gap = 2
+			}
+			text := ""
+			if m > 0.35 {
+				if finale {
+					// Every plate turns to YOU!! together for the send-off.
+					text = spaceOut("YOU!!", gap)
+				} else {
+					// Half the plates carry greet A, half greet B — each in a
+					// rotating case (UPPER / Camel / ScEnE), swapping one at a time.
+					name, style := greetNames[aIdx], aIdx%3
+					if (it.idx/3)%2 == 1 {
+						name, style = greetNames[bIdx], bIdx%3
+					}
+					text = spaceOut(stylize(name, style), gap)
+				}
+			}
+			if it.idx%2 == 0 {
+				h := 1 + int(it.nf*2.2*m)
+				w := len(text) + 2
+				if w < 4 {
+					w = 4
+				}
+				scr.ButtonH(it.row, Clampi(it.col-w/2, 1, 116), w, h, text, fmt.Sprintf("=G%d", it.idx))
+			} else {
+				w := len(text) + 1
+				if w < 3 {
+					w = 3
+				}
+				scr.Input(it.row, Clampi(it.col-w/2, 1, 116), w, fmt.Sprintf("GF%d", it.idx), text)
+			}
+			continue
+		}
+		// Junk: it thins out as m rises past a staggered threshold, floods back as
+		// m falls — the swarm dissolving into, and reforming from, the storm.
+		thr := 0.15 + 0.6*float64((it.idx*7)%10)/10.0
+		if m > thr {
+			continue
+		}
+		switch it.kind {
+		case 0:
+			w := 4
+			if it.depth > 0 {
+				w = 8
+			}
+			scr.ButtonH(it.row, Clampi(it.col-w/2, 1, 116), w, 1, "", fmt.Sprintf("=T%d", it.idx))
+		case 1:
+			scr.Output(it.row, it.col, 4, fmt.Sprintf("TI%d", it.idx), icons[it.idx%len(icons)], false)
+		case 2:
+			w := 3 + int((it.depth+1)*3.5)
+			scr.Input(it.row, Clampi(it.col-w/2, 1, 116), w, fmt.Sprintf("TF%d", it.idx), "")
+		default:
+			scr.Text(it.row, it.col, labels[it.idx%len(labels)])
+		}
+	}
+}
+
+// sceneGreetz is the tornado, made of greetings: the same spinning funnel (rings
+// around a vertical axis, camera tilt, perspective, CCW), but every widget in the
+// vortex carries a greet — buttons that grow TALLER up close and input fields
+// whose text spreads WIDER (letter-spacing) up close. Vertical size is the
+// button height, horizontal size is the spaces between the letters.
+func sceneGreetz(ts float64, scr *frame.Screen) {
+	const (
+		cx, centerRow = 59.0, 13.0
+		rows, perRing = 11, 1
+		vAspect       = 0.40
+		camDist       = 120.0
+		tilt          = 0.087 // fixed ~5° above the side view; no up-down camera motion
+	)
+	// A straight cylinder seen almost edge-on: the camera is parked at a steady
+	// ~5° above the equator, so the depth order never shifts and the z-sort
+	// (near widgets drawn last, over the far ones) stays clean.
+	sinP, cosP := math.Sin(tilt), math.Cos(tilt)
+
+	type item struct {
+		row, col, kind, k int
+		depth             float64
+	}
+	var items []item
+	for r := 0; r < rows; r++ {
+		radius := 24.0                              // constant radius — a cylinder, not a funnel
+		sway := math.Sin(ts*1.3+float64(r)*0.4) * 2 // a gentle breathing lean
+		// Spin slowly, and scatter each height's angle around the circle (a
+		// permutation, not a ramp) so the names populate the cylinder surface
+		// instead of spiralling down it like a vortex.
+		base := ts*1.2 + float64((r*5)%rows)/float64(rows)*2*math.Pi
+		py := (float64(rows-1)/2 - float64(r)) * 2.6 // height on the axis, centred
+		for k := 0; k < perRing; k++ {
+			a := base + float64(k)*math.Pi
+			px := radius * math.Cos(a)
+			pz := radius * math.Sin(a)
+			yUp := py*cosP + pz*sinP
+			zDepth := pz*cosP - py*sinP
+			p := camDist / (camDist - zDepth)
+			col := Clampi(int(cx+sway+px*p), 1, 116)
+			row := Clampi(int(centerRow-yUp*p*vAspect), 1, 25)
+			dN := zDepth / 45.0
+			if dN > 1 {
+				dN = 1
+			} else if dN < -1 {
+				dN = -1
+			}
+			items = append(items, item{row, col, (r + k) % 2, r*perRing + k, dN})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].depth < items[j].depth }) // back first
+	for _, it := range items {
+		name := greetNames[it.k%len(greetNames)]
+		nf := (it.depth + 1) / 2 // 0 far .. 1 near
+		gap := 0                 // horizontal growth: spaces between the letters
+		if nf > 0.55 {
+			gap = 1
+		}
+		if nf > 0.85 {
+			gap = 2
+		}
+		text := spaceOut(name, gap)
+		switch it.kind {
+		case 0: // a pushbutton that grows taller up close (vertical size)
+			h := 1 + int(nf*2.2) // 1 .. 3 rows
+			w := len(text) + 2
+			scr.ButtonH(it.row, Clampi(it.col-w/2, 1, 116), w, h, text, fmt.Sprintf("=G%d", it.k))
+		default: // an input field carrying the greet, wider up close
+			w := len(text) + 1
+			scr.Input(it.row, Clampi(it.col-w/2, 1, 116), w, fmt.Sprintf("GF%d", it.k), text)
+		}
+	}
+}
+
 func sceneEqualizer(ts float64, scr *frame.Screen) {
 	const bars, baseRow = 12, 20
 	for i := 0; i < bars; i++ {
@@ -506,15 +756,104 @@ func sceneMatrix(ts float64, scr *frame.Screen) {
 // swinging in from the left, filling the centre, then shrinking away to the
 // right and hiding round the back. Each character's spacing scales with depth,
 // so a name zooms as it turns to face the viewer.
+// greetNames are the shout-outs — the greets from the vivid-vibes outro credits
+// (oisee/vivid-vibes, build_demo_outro). Shuffled at startup (init below) with
+// Lars pinned first.
 var greetNames = []string{
-	"vivid-vibes", "vsp", "open-rfc-go", "sap-sso-trace",
-	"sap-kb", "ABAP demoscene", "SAP GUI benders",
+	"Lars Hvam Petersen",
+	"Scott Hanselman", "Paul Modderman", "Jelena Perfiljeva", "Fred Huet",
+	"Holger Bruchelt", "Dr. Philip Herzig", "Level 9", "Infocom", "Amit Lal",
+	"Prof. Dr. Alexander Zeier", "Marian Zeis", "Anthropic", "Volker Buzek",
+	"Camunda", "Filipp G.", "Claude", "Parazite", "Bizhuka", "Sq", "Kq",
+	"Thomas Jung", "Enno Wulff", "HallycinoJen", "KiM", "Marcello Urbani",
+	"Martin Pankraz", "Emma Qian", "Florian Farr", "S. Novikov", "Megus",
+	"SAP", "Devraj Bardhan", "IBM", "Random/CC", "Nora von Thenen", "TSL",
+	"Mistral", "Ivan Pirog", "Nik-O", "G_D", "JtN", "CyberJack", "4D",
+	"Triebkraft", "Stardust", "Gasman", "BaZe", "Nova", "Aki", "Arwel Owen",
+	"Edgar Martinez", "DJ Adams", "Michael Keller", "Dirk Roeckmann", "3SC",
+	"K3L", "Robin van het Hof", "Yurii Sychov", "Aλex Nihirash", "Introspec",
+}
+
+// Shuffle the greets at startup so the roll differs run to run, but keep Lars
+// Hvam Petersen (index 0) at the front.
+func init() {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r.Shuffle(len(greetNames)-1, func(i, j int) {
+		greetNames[i+1], greetNames[j+1] = greetNames[j+1], greetNames[i+1]
+	})
+}
+
+// stylize renders a greet in one of three cases, so the same name reappears
+// dressed differently: UPPERCASE, CamelCase, and ScEnE-case (irregular studly
+// caps).
+func stylize(s string, style int) string {
+	switch ((style % 3) + 3) % 3 {
+	case 1: // CamelCase
+		parts := strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == '-' || r == '_' })
+		for i, p := range parts {
+			if p != "" {
+				parts[i] = strings.ToUpper(p[:1]) + strings.ToLower(p[1:])
+			}
+		}
+		return strings.Join(parts, "")
+	case 2: // ScEnE-case: irregular alternating caps
+		b := []byte(strings.ToLower(s))
+		for i := range b {
+			if b[i] >= 'a' && b[i] <= 'z' && (i*7+int(b[i]))%2 == 0 {
+				b[i] -= 32
+			}
+		}
+		return string(b)
+	default: // UPPERCASE
+		return strings.ToUpper(s)
+	}
+}
+
+// smoothstep eases 0..1 with zero slope at both ends.
+func smoothstep(x float64) float64 {
+	x = clampf(x, 0, 1)
+	return x * x * (3 - 2*x)
+}
+
+// spaceOut inserts gap spaces between every character, so letter-spacing lives
+// inside a single string (one atom) rather than one atom per character. It walks
+// runes, so multi-byte names (e.g. "Aλex") stay intact.
+func spaceOut(s string, gap int) string {
+	if gap <= 0 {
+		return s
+	}
+	sep := strings.Repeat(" ", gap)
+	var b strings.Builder
+	first := true
+	for _, r := range s {
+		if !first {
+			b.WriteString(sep)
+		}
+		first = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// greetGap is the whole-name letter-spacing (spaces between letters) by depth,
+// in integer bands so it never jitters: wide at the front, tight round the side.
+func greetGap(depth float64) int {
+	switch {
+	case depth > 0.85:
+		return 3
+	case depth > 0.55:
+		return 2
+	case depth > 0.30:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func sceneGreetings(ts float64, scr *frame.Screen) {
 	const cx, midRow, rvert = 59.0, 11.0, 8.0
 	n := len(greetNames)
-	base := ts * 0.8 // drum rotation, rad/s
+	base := ts * 1.6 // drum rotation — faster vertical roll
 	scr.Text(1, 43, "= = =   O D G P   G R E E T S   = = =")
 	scr.Text(22, 40, "respect to everyone who bent a SAP GUI")
 
@@ -533,19 +872,14 @@ func sceneGreetings(ts float64, scr *frame.Screen) {
 			continue
 		}
 		a := base + float64(o.i)*2*math.Pi/float64(n)
-		// The name rolls vertically over the drum (its own row); front-centre is
-		// biggest and letter-spaced, the top/bottom edges tighten with the curve.
+		// Each name is ONE label: it rolls vertically over the cylinder (its own
+		// row), letter-spaced by depth, and sways on X by a sine so the drum feels
+		// alive. One atom per name keeps the frame light and the GUI fast.
 		row := midRow - math.Sin(a)*rvert
-		spacing := 0.8 + 1.6*o.depth
-		name := greetNames[o.i]
-		start := cx - float64(len(name)-1)/2*spacing
-		for j := 0; j < len(name); j++ {
-			col := start + float64(j)*spacing
-			if col < 1 || col > 116 {
-				continue
-			}
-			scr.Text(int(row+0.5), int(col+0.5), string(name[j]))
-		}
+		sway := math.Sin(ts*1.5+a) * 5.0 // the column waves side to side
+		text := spaceOut(greetNames[o.i], greetGap(o.depth))
+		col := cx + sway - float64(len(text))/2
+		scr.Text(int(row+0.5), int(col+0.5), text)
 	}
 }
 
