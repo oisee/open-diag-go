@@ -97,6 +97,7 @@ func Scenes() []Scene {
 		{Name: "ball", Approach: "a bright ball bouncing on the LED field", List: led(2)},
 		{Name: "starfield", Approach: "the whole character grid redrawn every frame", Dynpro: sceneStars},
 		{Name: "icons", Approach: "a grid of real SAP icons, drawn via output fields", Dynpro: sceneIcons},
+		{Name: "greetings", Approach: "a revolving drum of greets — names swing in, zoom at the front, turn away", Dynpro: sceneGreetings},
 	}
 }
 
@@ -496,6 +497,54 @@ func sceneMatrix(ts float64, scr *frame.Screen) {
 			}
 			g := glyphs[(x+y*7+int(ts*10.0))%len(glyphs)]
 			scr.Text(1+y, 1+x, string(g))
+		}
+	}
+}
+
+// sceneGreetings is the greets drum: a carousel of names revolving around a
+// vertical axis (the tornado's projection), near ones big and letter-spaced,
+// swinging in from the left, filling the centre, then shrinking away to the
+// right and hiding round the back. Each character's spacing scales with depth,
+// so a name zooms as it turns to face the viewer.
+var greetNames = []string{
+	"vivid-vibes", "vsp", "open-rfc-go", "sap-sso-trace",
+	"sap-kb", "ABAP demoscene", "SAP GUI benders",
+}
+
+func sceneGreetings(ts float64, scr *frame.Screen) {
+	const cx, midRow, rvert = 59.0, 11.0, 8.0
+	n := len(greetNames)
+	base := ts * 0.8 // drum rotation, rad/s
+	scr.Text(1, 43, "= = =   O D G P   G R E E T S   = = =")
+	scr.Text(22, 40, "respect to everyone who bent a SAP GUI")
+
+	type spun struct {
+		i     int
+		depth float64
+	}
+	order := make([]spun, n)
+	for i := range order {
+		a := base + float64(i)*2*math.Pi/float64(n)
+		order[i] = spun{i, math.Cos(a)} // depth: front > 0
+	}
+	sort.Slice(order, func(a, b int) bool { return order[a].depth < order[b].depth }) // back first
+	for _, o := range order {
+		if o.depth <= 0.05 { // hidden round the back of the drum
+			continue
+		}
+		a := base + float64(o.i)*2*math.Pi/float64(n)
+		// The name rolls vertically over the drum (its own row); front-centre is
+		// biggest and letter-spaced, the top/bottom edges tighten with the curve.
+		row := midRow - math.Sin(a)*rvert
+		spacing := 0.8 + 1.6*o.depth
+		name := greetNames[o.i]
+		start := cx - float64(len(name)-1)/2*spacing
+		for j := 0; j < len(name); j++ {
+			col := start + float64(j)*spacing
+			if col < 1 || col > 116 {
+				continue
+			}
+			scr.Text(int(row+0.5), int(col+0.5), string(name[j]))
 		}
 	}
 }

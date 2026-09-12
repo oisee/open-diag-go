@@ -526,10 +526,10 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 			} else {
 				log("<- client frame, %d bytes (%v)", len(payload), perr)
 			}
-			// A window-close: the GUI sends the system command "/i". Answer
-			// with the joke popup once, then accept the next click (any
-			// button) by closing.
-			if perr == nil && jokeStep == 0 && isClose(diag.ParseItems(m.Body)) {
+			// An exit command — window-close /i, /n, Back, exit. Answer with
+			// the joke popup once, then accept the next click (any button) by
+			// closing. Any of these gets the viewer out of the show.
+			if perr == nil && jokeStep == 0 && isExitCmd(diag.ParseItems(m.Body)) {
 				// Stop any animation first: a running push loop would otherwise
 				// keep drawing over the log-off popup, and keep writing after the
 				// session ends. This is the /i reaction every mode now shares.
@@ -949,6 +949,21 @@ func isClose(items []diag.Item) bool {
 		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x04 && strings.TrimSpace(string(it.Value)) == "/i" {
 			return true
 		}
+	}
+	return false
+}
+
+// isExitCmd is any command a viewer uses to leave the show: the window close
+// (/i), end-transaction (/n and its variants), Back, and a plain "exit". They
+// all get the same two-joke send-off so it is easy to get out of the demo,
+// however you reach for the exit.
+func isExitCmd(items []diag.Item) bool {
+	if isClose(items) { // the window close, /i
+		return true
+	}
+	switch strings.ToLower(funcCode(items)) {
+	case "/n", "/nend", "/nex", "/bend", "back", "=back", "exit":
+		return true
 	}
 	return false
 }
