@@ -708,13 +708,22 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				continue
 			}
 			if (mode == "anim" || mode == "widgets" || mode == "demo" || mode == "iconanim" || mode == "led" || animOn) && pushing != nil {
-				// While animating, any client frame is the user pressing a
-				// key (F3, Back, Enter): stop the animation and freeze the
-				// last frame. A window-close was handled just above.
+				// A real interaction stops the show; but the GUI also sends frames
+				// on its own — notably an ack when the demo switches to the LED list
+				// channel (matrix -> plasma) — and those must NOT stop it. Treat a
+				// frame as an interaction only if it carries a function code or a
+				// control event; ignore benign/unparseable acks and keep pushing.
+				if perr != nil {
+					continue
+				}
+				it := diag.ParseItems(m.Body)
+				if funcCode(it) == "" && len(diag.Events(it)) == 0 {
+					continue // benign ack (e.g. the list-channel switch) — keep playing
+				}
 				close(pushing)
 				pushing = nil
 				animOn = false
-				log("animation stopped by the user")
+				log("animation stopped by the user (fc=%q, %d events)", funcCode(it), len(diag.Events(it)))
 				// A keypress during the show — Back, Exit, Cancel, Enter, whatever
 				// the viewer reached for — means "get me out". Give it the same
 				// two-joke send-off as an explicit /i or /n, so every exit route
