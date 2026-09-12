@@ -1225,9 +1225,13 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	}
 	items := diag.ParseItems(m.Body)
 	atomIdx := -1
+	titleIdx := -1 // the dynpro title (APPL 0x0c/0x09, "SAP") in the green bar
 	for i, it := range items {
 		if it.Type == diag.ItemAPPL4 && it.ID == 0x09 && it.SID == 0x02 {
 			atomIdx = i
+		}
+		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x09 {
+			titleIdx = i
 		}
 	}
 	if atomIdx < 0 {
@@ -1424,6 +1428,12 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		// No on-screen captions — just the effect.
 		out := append([]diag.Item{}, base...)
 		out[atomIdx].Value = scr.Encode()
+		// The greet scenes rename the green title bar from "SAP" to "GREETINGS".
+		if titleIdx >= 0 && strings.HasPrefix(scenes[idx].Name, "greet") {
+			t := out[titleIdx]
+			t.Value = []byte("GREETINGS")
+			out[titleIdx] = t
+		}
 		// Sound: a scene with events (a firework burst) drives its own beeps
 		// off the frame's time span; otherwise fall back to the beat / single
 		// beep. Event audio is natural and sparse — it marks what happened.

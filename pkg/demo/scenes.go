@@ -87,7 +87,6 @@ func Scenes() []Scene {
 		{Name: "tetra", Approach: "a wireframe tetrahedron tumbling fast", Dynpro: sceneTetra},
 		{Name: "octa", Approach: "a wireframe octahedron spinning fast", Dynpro: sceneOcta},
 		{Name: "solid", Approach: "a spinning cube whose edges are z-sorted BUTTONs — solid filled rectangles", Dynpro: sceneSolid},
-		{Name: "tornado", Approach: "a funnel of mixed widgets — buttons, icons, inputs, labels — spiralling like a tornado", Dynpro: sceneTornado},
 		{Name: "equalizer", Approach: "a row of buttons whose Height is the graphics — bars", DurMul: 2, Dynpro: sceneEqualizer},
 		{Name: "snake", Approach: "a label snake on a Lissajous path, with a fading trail", Dynpro: sceneSnake},
 		{Name: "matrix", Approach: "sparse falling columns — the grid used lightly", Dynpro: sceneMatrix},
@@ -98,7 +97,6 @@ func Scenes() []Scene {
 		{Name: "ball", Approach: "a bright ball bouncing on the LED field", List: led(2)},
 		{Name: "starfield", Approach: "the whole character grid redrawn every frame", Dynpro: sceneStars},
 		{Name: "icons", Approach: "a grid of real SAP icons, drawn via output fields", Dynpro: sceneIcons},
-		{Name: "greetings", Approach: "a revolving drum of greets — names swing in, zoom at the front, turn away", Dynpro: sceneGreetings},
 		{Name: "greetz", Approach: "the tornado made of greets — buttons grow taller, input fields spread wider, all spinning", Dynpro: sceneGreetz},
 		{Name: "greetstorm", Approach: "the looping finale — a tornado of junk eases into a slow cylinder of greetings and back, forever", Dur: 80 * time.Second, Dynpro: sceneGreetstorm},
 	}
