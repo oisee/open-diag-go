@@ -1093,6 +1093,47 @@ func loadLogonWrap(cap *replay.Capture, log func(string, ...any)) (*logonWrap, b
 	return nil, false
 }
 
+// loginFieldsScreen is the login scene when it runs inside the real logon
+// backdrop: only the fields (and the Information box that lived in the same
+// atom) — the menu, status and welcome text come from the capture. The phases
+// are the same as sceneLogin: still, a square drift, then orbiting copies.
+func loginFieldsScreen(ts float64) *frame.Screen {
+	const homeTop, homeLeft = 0, 1
+	const dx, dy = 44.0, 11.0
+	scr := frame.New(27, 120)
+	// No Information box here: the still frame is shown verbatim (native box),
+	// and once the fields move the box is meant to be gone.
+	switch {
+	case ts < 6:
+		demo.LoginFields(scr, homeTop, homeLeft, 0)
+	case ts < 12:
+		f := (ts - 6) / 6 * 4
+		seg := int(f)
+		fr := f - float64(seg)
+		top, left := float64(homeTop), float64(homeLeft)
+		switch seg {
+		case 0:
+			left = homeLeft + fr*dx
+		case 1:
+			left = homeLeft + dx
+			top = homeTop + fr*dy
+		case 2:
+			left = homeLeft + (1-fr)*dx
+			top = homeTop + dy
+		default:
+			top = homeTop + (1-fr)*dy
+		}
+		demo.LoginFields(scr, int(top), int(left), 0)
+	case ts < 18:
+		demo.OrbitLogins(scr, (ts-12)*1.4, 1)
+	case ts < 22:
+		demo.OrbitLogins(scr, (ts-12)*1.4, 2)
+	default:
+		demo.OrbitLogins(scr, (ts-12)*1.4, 3)
+	}
+	return scr
+}
+
 // speedAt is the animation-time multiplier for step i, defaulting to 1 when
 // none was set (or the slice is short).
 func speedAt(speeds []float64, i int) float64 {
@@ -1128,6 +1169,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	h := m.Header
 	h.Compress = 0
 	base := items
+	logon, haveLogon := loadLogonWrap(cap, log)
 	// Prepare the list wrapper so the LED scenes can render in the list channel:
 	// keep everything but the list stream, remember where the stream goes.
 	var listKeep []diag.Item
@@ -1274,6 +1316,30 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 			mine := diag.EncodeListItems(demo.LEDSegmentsEff(eff, t))
 			out := append(append(append([]diag.Item{}, listKeep[:listInsertAt]...), mine...), listKeep[listInsertAt:]...)
 			msg, err := diag.EncodeMessage(listHdr, out, false)
+			if err != nil {
+				return nil
+			}
+			return msg
+		}
+		// The login scene runs inside the real captured logon frame when we
+		// have one: swap just the fields atom, so the menu bar, the New
+		// password status entry and the Information text are all the genuine
+		// article, and only the fields move. This is the reference login on
+		// demo.desude.su:3200 — the native SAPMSYST logon (prefilled ?/* fields,
+		// the Information box overflowing its frame the way the real GUI draws
+		// it), not a synthesized clean-canvas copy.
+		if scenes[idx].Name == "login" && haveLogon {
+			out := append([]diag.Item{}, logon.items...)
+			// Still: the captured frame verbatim — the real Information box and
+			// all. Moving: swap the fields for the flying ones (no box) and
+			// clear the welcome text, so the box is gone once it comes alive.
+			if ts >= 6 {
+				out[logon.fieldIdx].Value = loginFieldsScreen(ts).Encode()
+				if logon.welcomeIdx >= 0 {
+					out[logon.welcomeIdx].Value = nil
+				}
+			}
+			msg, err := diag.EncodeMessage(logon.header, out, false)
 			if err != nil {
 				return nil
 			}
