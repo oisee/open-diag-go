@@ -715,10 +715,18 @@ func serve(ctx context.Context, c net.Conn, cap *replay.Capture, mode string, me
 				pushing = nil
 				animOn = false
 				log("animation stopped by the user")
-				// The dynpro modes swap in a "stopped" screen; the list-channel
-				// icon animation stays on its list frame instead of switching
-				// channels, so it just freezes on the last frame it pushed.
+				// A keypress during the show — Back, Exit, Cancel, Enter, whatever
+				// the viewer reached for — means "get me out". Give it the same
+				// two-joke send-off as an explicit /i or /n, so every exit route
+				// lands on the joke popup, not a dead "stopped" screen. The
+				// list-channel icon animation has no dynpro to draw a popup over,
+				// so it just freezes on its last frame.
 				if mode != "iconanim" && mode != "led" {
+					if jp := jokePopup1(popup); jp != nil {
+						jokeStep = 1
+						_ = send("joke popup 1: Where are you going??? (keypress)", jp)
+						continue
+					}
 					frozen := frame.New(27, 120).
 						Text(1, 2, "animation stopped").
 						Text(3, 2, "close the window to exit")
