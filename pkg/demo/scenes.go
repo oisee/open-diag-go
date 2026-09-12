@@ -83,7 +83,6 @@ func Scenes() []Scene {
 	return []Scene{
 		{Name: "login", Approach: "a login form that sits, drifts a square, orbits, then multiplies", Dur: 26 * time.Second, Bare: true, Dynpro: sceneLogin},
 		{Name: "orbit", Approach: "3 widgets moved by coordinate, sized by depth", DurMul: 2, Dynpro: sceneOrbit},
-		{Name: "cube", Approach: "a wireframe cube spinning on two axes, near vertices bright — few objects, like orbit", Dynpro: sceneCube},
 		{Name: "tetra", Approach: "a wireframe tetrahedron tumbling fast", Dynpro: sceneTetra},
 		{Name: "octa", Approach: "a wireframe octahedron spinning fast", Dynpro: sceneOcta},
 		{Name: "solid", Approach: "a spinning cube whose edges are z-sorted BUTTONs — solid filled rectangles", Dynpro: sceneSolid},

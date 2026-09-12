@@ -57,6 +57,22 @@ type showStep struct {
 // scenes.
 var demoShow []showStep
 
+// showPath is the live compose-file (from -show, or defaulted under -http). The
+// demo renderer re-reads it for each new connection, and the -http composer
+// writes it, so an edit reaches the next SAP GUI that connects — no restart.
+var showPath string
+
+// currentShow returns the live show: the compose-file at showPath if it loads,
+// otherwise the show fixed at startup. Read fresh per connection.
+func currentShow() []showStep {
+	if showPath != "" {
+		if steps, _, err := loadShow(showPath); err == nil {
+			return steps // an empty file (no steps) means "play all", like no show
+		}
+	}
+	return demoShow
+}
+
 // parsePlaylist reads "orbit:6,tornado:10,solid" into show steps: each is a
 // scene name and an optional seconds after a colon (speed defaults to 1).
 func parsePlaylist(spec string) []showStep {
@@ -204,6 +220,7 @@ func main() {
 	scene := flag.String("scene", "", "demo mode: play only this one scene, looping (e.g. fireworks, helix, equalizer, matrix)")
 	playlist := flag.String("playlist", "", "demo mode: compose a show as a comma list of scene[:seconds] entries, played in order and looped, e.g. \"orbit:6,tornado:10,solid:8,fireworks:9\" (seconds default to -scene-ms)")
 	show := flag.String("show", "", "demo mode: load a JSON compose-file (timeline of scenes with seconds and speed) written by the timeline editor; overrides -playlist/-scene")
+	httpAddr := flag.String("http", "", "serve the live timeline composer on this addr (e.g. :8088): edit the show in a browser, it saves to the -show file, and the next SAP GUI to connect plays it")
 	recolor := flag.Bool("recolor", false, "patch the colours of any ALV grid in a replayed frame with our own pattern")
 	recolorId := flag.Bool("recolor-identity", false, "recolor pipeline runs but writes each cell its existing colour (isolates recompression from colour values)")
 	recolorStored := flag.Bool("recolor-stored", false, "compress recoloured ALV blobs with DEFLATE stored blocks instead of dynamic Huffman")
@@ -214,17 +231,35 @@ func main() {
 	demoSceneMS = *sceneMS
 	demoSceneFilter = *scene
 	if *show != "" {
-		steps, sms, err := loadShow(*show)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "server: show:", err)
+		showPath = *show
+		if _, statErr := os.Stat(*show); statErr == nil {
+			steps, sms, err := loadShow(*show)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "server: show:", err)
+				os.Exit(1)
+			}
+			demoShow = steps
+			if sms > 0 {
+				demoSceneMS = sms
+			}
+		} else if *httpAddr == "" {
+			// No file and no composer to create one — a genuine mistake.
+			fmt.Fprintln(os.Stderr, "server: show:", statErr)
 			os.Exit(1)
 		}
-		demoShow = steps
-		if sms > 0 {
-			demoSceneMS = sms
-		}
+		// else: -http is on; the composer will write this file. Start with an
+		// empty show (play all scenes) until it does.
 	} else {
 		demoShow = parsePlaylist(*playlist)
+	}
+	if *httpAddr != "" {
+		// The composer needs a file to write; default it when -show was omitted.
+		if showPath == "" {
+			showPath = "show.json"
+		}
+		go serveComposer(*httpAddr, showPath, func(f string, a ...any) {
+			fmt.Fprintf(os.Stderr, "composer: "+f+"\n", a...)
+		})
 	}
 	recolorOn = *recolor || *recolorId || *recolorPass
 	recolorIdentity = *recolorId
@@ -1207,14 +1242,15 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	for i := range speeds {
 		speeds[i] = 1
 	}
+	liveShow := currentShow() // re-read the compose-file so a new client sees edits
 	switch {
-	case len(demoShow) > 0:
+	case len(liveShow) > 0:
 		// A composed show: play the named scenes in order, each for its step's
 		// length and speed, looping the whole list.
 		var sc []demo.Scene
 		var sp []float64
 		var names []string
-		for _, e := range demoShow {
+		for _, e := range liveShow {
 			s, ok := byName[e.name]
 			if !ok {
 				log("demo: show scene %q not found, skipped", e.name)
