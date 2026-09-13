@@ -1396,8 +1396,9 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 		// The login scene runs inside the real captured logon frame when we
 		// have one: swap just the fields atom, so the menu bar, the New
 		// password status entry and the Information text are all the genuine
-		// article, and only the fields move. This is the reference login on
-		// demo.desude.su:3200 — the native SAPMSYST logon (prefilled ?/* fields,
+		// article, and only the fields move. This is the reference login the
+		// live light-show serves (demo.desude.su:3200) — the native SAPMSYST
+		// logon (prefilled ?/* fields,
 		// the Information box overflowing its frame the way the real GUI draws
 		// it), not a synthesized clean-canvas copy.
 		if scenes[idx].Name == "login" && haveLogon {
