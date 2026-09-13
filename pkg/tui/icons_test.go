@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // cellsToString drops the styling and returns the glyphs, for asserting layout.

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
-	"github.com/oisee/open-diag-go-pro/pkg/tui"
+	"github.com/oisee/open-diag-go/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/tui"
 )
 
 // chrome is what the GUI keeps showing between screens: the window title,

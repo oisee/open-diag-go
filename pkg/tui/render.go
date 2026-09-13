@@ -12,7 +12,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // DefaultRows and DefaultCols are the classic dynpro size used when the

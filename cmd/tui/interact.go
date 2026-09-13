@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
-	"github.com/oisee/open-diag-go-pro/pkg/tui"
+	"github.com/oisee/open-diag-go/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/tui"
 )
 
 // The interactive screen: the atoms the server sent, a focus ring over every

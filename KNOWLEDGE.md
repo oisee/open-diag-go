@@ -1,4 +1,4 @@
-# open-diag-go-pro — protocol & element knowledge base
+# open-diag-go — protocol & element knowledge base
 
 What we have reverse-engineered of the SAP GUI **DIAG** protocol, read off real
 captures on an A4H ABAP trial. This is the living reference; the authoritative

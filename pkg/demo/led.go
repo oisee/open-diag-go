@@ -5,7 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // The LED display: a small logical grid of coloured cells drawn in the classic

@@ -19,8 +19,8 @@ import (
 
 	"unicode/utf16"
 
-	"github.com/oisee/open-diag-go-pro/pkg/alv"
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/alv"
+	"github.com/oisee/open-diag-go/pkg/diag"
 	"github.com/oisee/vibing-steampunk/pkg/sapcompress"
 )
 

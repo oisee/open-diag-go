@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/oisee/open-diag-go-pro/pkg/frame"
+	"github.com/oisee/open-diag-go/pkg/frame"
 )
 
 // snake is the interactive proof: a Go program whose world advances on a

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // at reads the string of length n starting at row, col off the grid.

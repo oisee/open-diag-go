@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/oisee/open-diag-go-pro/pkg/alv"
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/alv"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // fromMCP reads the SAP_* environment of one server in a .mcp.json (the file

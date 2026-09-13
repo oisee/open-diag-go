@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // Frame is one captured NI payload.

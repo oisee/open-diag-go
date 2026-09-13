@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
-	"github.com/oisee/open-diag-go-pro/pkg/tui"
+	"github.com/oisee/open-diag-go/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/tui"
 )
 
 // Menu-bar navigation. F10 (or a click on a title) opens the menu bar; the

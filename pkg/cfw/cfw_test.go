@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // rfctr00 returns the value of the RFC_TR.00 item in the nth S->C frame of a

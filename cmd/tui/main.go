@@ -39,9 +39,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/oisee/open-rfc-go/ni"
 
-	"github.com/oisee/open-diag-go-pro/pkg/cfw"
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
-	"github.com/oisee/open-diag-go-pro/pkg/tui"
+	"github.com/oisee/open-diag-go/pkg/cfw"
+	"github.com/oisee/open-diag-go/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/tui"
 )
 
 func main() {

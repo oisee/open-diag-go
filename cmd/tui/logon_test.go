@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 func capFrames(t *testing.T, dir string, n int) [][]byte {

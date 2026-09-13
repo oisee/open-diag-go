@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/oisee/open-diag-go-pro/pkg/alv"
+	"github.com/oisee/open-diag-go/pkg/alv"
 	"github.com/oisee/vibing-steampunk/pkg/sapcompress"
 )
 

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // renderCapture draws, offline, every screen a tap capture holds: it walks the

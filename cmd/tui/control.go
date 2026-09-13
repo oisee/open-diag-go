@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/oisee/open-diag-go-pro/pkg/cfw"
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/cfw"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // The Control Framework: after logon the server calls into the GUI over

@@ -9,7 +9,7 @@ import (
 
 	_ "embed"
 
-	"github.com/oisee/open-diag-go-pro/pkg/replay"
+	"github.com/oisee/open-diag-go/pkg/replay"
 )
 
 // show.bin is the self-contained show asset: the four wrapper DIAG frames the

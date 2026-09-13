@@ -1,4 +1,4 @@
-module github.com/oisee/open-diag-go-pro
+module github.com/oisee/open-diag-go
 
 go 1.26
 

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
-	"github.com/oisee/open-diag-go-pro/pkg/frame"
+	"github.com/oisee/open-diag-go/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/frame"
 )
 
 // Scene is one act of the demo.

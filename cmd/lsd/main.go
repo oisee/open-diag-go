@@ -22,8 +22,8 @@ import (
 
 	"github.com/oisee/open-rfc-go/ni"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
-	"github.com/oisee/open-diag-go-pro/pkg/frame"
+	"github.com/oisee/open-diag-go/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/frame"
 )
 
 func main() {

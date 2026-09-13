@@ -6,9 +6,9 @@ import (
 	"os"
 	"sync"
 
-	"github.com/oisee/open-diag-go-pro/pkg/demo"
-	"github.com/oisee/open-diag-go-pro/pkg/frame"
-	"github.com/oisee/open-diag-go-pro/pkg/tui"
+	"github.com/oisee/open-diag-go/pkg/demo"
+	"github.com/oisee/open-diag-go/pkg/frame"
+	"github.com/oisee/open-diag-go/pkg/tui"
 )
 
 // serveComposer runs the live timeline composer: a browser edits the show, it

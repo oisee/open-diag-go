@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 // Screen is a grid of the given size with elements placed on it.

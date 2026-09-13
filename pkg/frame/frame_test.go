@@ -3,7 +3,7 @@ package frame
 import (
 	"testing"
 
-	"github.com/oisee/open-diag-go-pro/pkg/diag"
+	"github.com/oisee/open-diag-go/pkg/diag"
 )
 
 func TestScreenCounter(t *testing.T) {

@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/oisee/open-diag-go-pro/pkg/diag"
+import "github.com/oisee/open-diag-go/pkg/diag"
 
 // Style is how one cell is painted: 256-colour ANSI indices for foreground
 // and background (0 = the terminal's default) and the bold / underline /

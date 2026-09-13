@@ -1,4 +1,4 @@
-# CLAUDE.md — open-diag-go-pro
+# CLAUDE.md — open-diag-go
 
 SAP GUI as a display: a server (and now a terminal client) that speaks the
 DIAG protocol well enough for a real SAP GUI to draw from our frames.
@@ -11,7 +11,7 @@ DIAG protocol well enough for a real SAP GUI to draw from our frames.
 - **Shared knowledge base:** [`../sap-kb/`](../sap-kb/) maps this repo against
   its siblings (vsp, open-rfc-go, sap-sso-trace) — the layer stack, the reuse
   matrix, and the cross-repo backlog.
-  - This repo's chapter: [`../sap-kb/repos/open-diag-go-pro.md`](../sap-kb/repos/open-diag-go-pro.md)
+  - This repo's chapter: [`../sap-kb/repos/open-diag-go.md`](../sap-kb/repos/open-diag-go.md)
   - Cross-repo backlog: [`../sap-kb/backlog.md`](../sap-kb/backlog.md)
 
 ## Layout

@@ -1,4 +1,4 @@
-# open-diag-go-pro (odgp)
+# open-diag-go (odgp)
 
 SAP GUI as a display. A server that speaks DIAG — the protocol between SAP GUI
 and the dispatcher — well enough for a real SAP GUI to connect to it and draw

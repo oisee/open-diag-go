@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/oisee/open-diag-go-pro/pkg/demo"
-	"github.com/oisee/open-diag-go-pro/pkg/frame"
-	"github.com/oisee/open-diag-go-pro/pkg/tui"
+	"github.com/oisee/open-diag-go/pkg/demo"
+	"github.com/oisee/open-diag-go/pkg/frame"
+	"github.com/oisee/open-diag-go/pkg/tui"
 )
 
 // runDemo animates, non-interactively, entirely locally: no socket, no SAP, no
