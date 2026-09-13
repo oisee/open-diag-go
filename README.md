@@ -10,8 +10,11 @@ Pure Go, no SAP libraries, MIT-licensed. Built on
 the framing-aware proxy, and on `vibing-steampunk`'s `sapcompress` for the LZH
 and LZC that DIAG uses on the wire.
 
-> Research preview. Nothing here has drawn a frame yet. Phase 0 is the gate:
-> see [docs/plan.md](docs/plan.md).
+> **Try it live:** point a SAP GUI at `demo.desude.su` (Instance Number **00**,
+> no SNC), or watch in your terminal with
+> [**sap-tui**](https://github.com/oisee/sap-tui): `sap-tui demo.desude.su:3200`.
+> The light-show it draws is [**sap-lsd**](https://github.com/oisee/sap-lsd),
+> built on this library.
 
 ## The one thing everything hangs on
 
