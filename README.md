@@ -43,3 +43,13 @@ go build ./cmd/tap ./cmd/lens
 ./tap -listen :3200 -target sandbox.example:3200 -dump captures/probe.jsonl   # then point SAP GUI at localhost:3200
 ./lens captures/probe.jsonl                                                  # what went by, item by item
 ```
+
+## License & disclaimer
+
+MIT — see [LICENSE](LICENSE).
+
+This is an independent interoperability / research project. It is **not
+affiliated with, authorized, or endorsed by SAP SE**. "SAP" and related marks
+are trademarks of SAP SE, used here only to name the protocol this speaks.
+Point it at systems you are allowed to test; the public light-show at
+`demo.desude.su:3200` is there to play with.
