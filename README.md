@@ -16,6 +16,8 @@ and LZC that DIAG uses on the wire.
 > The light-show it draws is [**sap-lsd**](https://github.com/oisee/sap-lsd),
 > built on this library.
 
+📺 **See it in action:** https://www.youtube.com/watch?v=Pszxxj-OUAk
+
 ## The one thing everything hangs on
 
 A dynpro is redrawn only when the GUI does a roundtrip, and a roundtrip happens
