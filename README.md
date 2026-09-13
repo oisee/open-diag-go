@@ -16,7 +16,9 @@ and LZC that DIAG uses on the wire.
 > The light-show it draws is [**sap-lsd**](https://github.com/oisee/sap-lsd),
 > built on this library.
 
-📺 **See it in action:** https://www.youtube.com/watch?v=Pszxxj-OUAk
+📺 **See it in action** ([watch on YouTube](https://www.youtube.com/watch?v=Pszxxj-OUAk)):
+
+[![open-diag-go — a demoscene light-show drawn over SAP DIAG](https://img.youtube.com/vi/Pszxxj-OUAk/maxresdefault.jpg)](https://www.youtube.com/watch?v=Pszxxj-OUAk)
 
 ## The one thing everything hangs on
 
