@@ -1,11 +1,11 @@
-# open-diag-go (odgp)
+# open-diag-go (odg)
 
 SAP GUI as a display. A server that speaks DIAG — the protocol between SAP GUI
 and the dispatcher — well enough for a real SAP GUI to connect to it and draw
 one dynpro after another from our own description, at our own cadence. No SAP
 system behind it: the frames come from a demo engine.
 
-Pure Go, no SAP libraries, Apache-2.0. Built on
+Pure Go, no SAP libraries, MIT-licensed. Built on
 [`open-rfc-go`](https://github.com/oisee/open-rfc-go) for the NI transport and
 the framing-aware proxy, and on `vibing-steampunk`'s `sapcompress` for the LZH
 and LZC that DIAG uses on the wire.

@@ -53,6 +53,6 @@ grid for a backend instead of a vector.
 ## Decisions
 
 - Language: Go from the start. The transport, the proxy and the compression
-  exist in Go under Apache-2.0; a Python prototype on pysap would be GPL and
+  exist in Go under MIT; a Python prototype on pysap would be GPL and
   a port of it a translation.
 - Kick cadence: ours to choose; bounded by how fast the GUI redraws. Phase 3.

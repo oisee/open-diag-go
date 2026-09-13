@@ -8,7 +8,7 @@ const composerHTML = `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ODGP Show Composer</title>
+<title>ODG Show Composer</title>
 <style>
   :root{
     --bg:#0a0e14; --panel:#131a24; --panel2:#0f151d; --line:#22303f;
@@ -70,7 +70,7 @@ const composerHTML = `<!doctype html>
 <body>
   <header>
     <div>
-      <h1>ODGP Show Composer <span class="pill">live</span></h1>
+      <h1>ODG Show Composer <span class="pill">live</span></h1>
       <div class="foot" style="margin-top:4px">edits save to the server &mdash; the next SAP GUI to connect plays them</div>
     </div>
     <div class="row">

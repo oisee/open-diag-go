@@ -1043,7 +1043,7 @@ func withSound(items []diag.Item, n int) []diag.Item {
 // insertStatus puts a status message (whose GUI sound is type t) just before
 // EOM, so the client plays that sound with the frame.
 func insertStatus(items []diag.Item, t byte) []diag.Item {
-	msg := diag.StatusMessage(t, "odgp: now playing")
+	msg := diag.StatusMessage(t, "odg: now playing")
 	out := make([]diag.Item, 0, len(items)+1)
 	for _, it := range items {
 		if it.Type == diag.ItemEOM {
@@ -1056,7 +1056,7 @@ func insertStatus(items []diag.Item, t byte) []diag.Item {
 
 func widgetsScreen(t int) *frame.Screen {
 	scr := frame.New(27, 120)
-	scr.Frame(0, 0, 78, 24, "OPEN-DIAG-GO-PRO  --  widgets orbiting, drawn by Go")
+	scr.Frame(0, 0, 78, 24, "OPEN-DIAG-GO  --  widgets orbiting, drawn by Go")
 	// Three buttons on a circle, 120 degrees apart, turning counter-clockwise.
 	// The column radius is larger than the row radius because a character
 	// cell is about twice as tall as it is wide, so the path reads round.
@@ -1462,7 +1462,7 @@ func animScreen(t int) *frame.Screen {
 	const w, h = 78, 20
 	scr := frame.New(27, 120)
 	// A marquee scrolling left across the top.
-	banner := "  OPEN-DIAG-GO-PRO  ***  a screen SAP GUI draws, driven by Go  ***"
+	banner := "  OPEN-DIAG-GO  ***  a screen SAP GUI draws, driven by Go  ***"
 	line := make([]byte, w)
 	for i := 0; i < w; i++ {
 		line[i] = banner[(t+i)%len(banner)]
@@ -1580,7 +1580,7 @@ func findListFrame(cap *replay.Capture) (int, bool) {
 // list colours, so the whole palette shows at once.
 func colourListSegments() []diag.ListSegment {
 	segs := []diag.ListSegment{
-		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  a colourful classic list, drawn by Go"),
+		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO  --  a colourful classic list, drawn by Go"),
 		diag.ListText(2, 2, diag.ColHeading, "colour"),
 		diag.ListText(2, 20, diag.ColHeading, "sample text"),
 	}
@@ -1658,7 +1658,7 @@ func colorlistRenderer(wrap []byte, log func(string, ...any)) func(n int) []byte
 // moving picture drawn entirely in the list channel.
 func iconAnimSegments(n int) []diag.ListSegment {
 	var segs []diag.ListSegment
-	segs = append(segs, diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  animated icons in the list channel"))
+	segs = append(segs, diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO  --  animated icons in the list channel"))
 
 	// A KITT scanner: a green LED head with a two-step yellow trail, sweeping a
 	// track and bouncing at the ends. Only the lit cells are drawn.
@@ -1859,7 +1859,7 @@ func listRenderer(cap *replay.Capture, wrapFrame int, log func(string, ...any)) 
 		return func(int) []byte { return nil }
 	}
 	lines := []string{
-		"odgp classic list  --  a write-list, drawn from frame.Lines",
+		"odg classic list  --  a write-list, drawn from frame.Lines",
 		"------------------------------------------------------------",
 		"idx    label      value      square",
 		"------------------------------------------------------------",
@@ -1896,7 +1896,7 @@ type appState struct {
 // from the PAI it just received.
 func appScreen(st *appState) *frame.Screen {
 	scr := frame.New(27, 120).
-		Text(1, 2, "odgp interactive  --  a Go PBO/PAI loop").
+		Text(1, 2, "odg interactive  --  a Go PBO/PAI loop").
 		Text(3, 2, "Enters so far").
 		Number(3, 20, 10, "GV_TICKS", st.turns).
 		Text(5, 2, "press Enter to count; what you type in a field comes back below")
@@ -1922,7 +1922,7 @@ func appScreen(st *appState) *frame.Screen {
 // code it produced — with no on-screen buttons at all.
 func echoScreen(st *appState) *frame.Screen {
 	scr := frame.New(27, 120).
-		Frame(0, 0, 110, 24, "odgp echo  --  press keys; this is what SAP GUI sent back").
+		Frame(0, 0, 110, 24, "odg echo  --  press keys; this is what SAP GUI sent back").
 		Text(2, 2, "PAIs received").
 		Number(2, 20, 8, "GV_N", st.turns).
 		Text(3, 2, "press function keys, Enter, menu shortcuts (Ctrl/Shift+F..) — most recent first:")

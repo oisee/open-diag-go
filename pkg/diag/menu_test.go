@@ -62,9 +62,9 @@ func TestParseMenuTruncated(t *testing.T) {
 
 // StatusMessage and ParseStatusMessage are inverses.
 func TestParseStatusMessage(t *testing.T) {
-	it := StatusMessage(MsgWarning, "odgp: now playing")
+	it := StatusMessage(MsgWarning, "odg: now playing")
 	typ, text := ParseStatusMessage(it.Value)
-	if typ != 'W' || text != "odgp: now playing" {
+	if typ != 'W' || text != "odg: now playing" {
 		t.Errorf("parsed (%q, %q)", typ, text)
 	}
 	if typ, text := ParseStatusMessage([]byte{'E', 0, '0', '0'}); typ != 'E' || text != "" {

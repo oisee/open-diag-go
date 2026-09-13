@@ -112,7 +112,7 @@ func LEDSegmentsEff(eff int, t float64) []diag.ListSegment {
 	}
 	const bw, bh = 4, 2
 	segs := []diag.ListSegment{
-		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO-PRO  --  LED display: colour + letters (RLE)"),
+		diag.ListText(0, 2, diag.ColHeading, "OPEN-DIAG-GO  --  LED display: colour + letters (RLE)"),
 	}
 	for lr := 0; lr < LEDRows; lr++ {
 		type run struct {

@@ -26,10 +26,10 @@ func runDemo(sceneMS int, plain bool) error {
 	go watchQuit(ctx, stop)
 
 	ch := chrome{
-		title:   "SAP GUI as a display — odgp demo",
+		title:   "SAP GUI as a display — odg demo",
 		menus:   []string{"Menu", "Edit", "Goto", "System", "Help"},
 		toolbar: []string{"@0V@ Play", "@0W@ Stop"},
-		sysid:   "ODGP",
+		sysid:   "ODG",
 		program: "ZODGP_DEMO",
 		dynpro:  "0100",
 	}

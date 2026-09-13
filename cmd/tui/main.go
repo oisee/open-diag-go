@@ -14,7 +14,7 @@
 // It never sends a keystroke or a function code of its own, and it makes at
 // most one logon attempt per run: a second wrong password would count towards
 // locking the user, so a logon screen that comes back is drawn, not answered.
-// The password is read from the .mcp.json the user points at (or ODGP_PASSWORD
+// The password is read from the .mcp.json the user points at (or ODG_PASSWORD
 // when --user is given on the command line) and is never logged or drawn.
 // Point this only at your own system.
 package main
@@ -52,7 +52,7 @@ func main() {
 	logon := flag.Bool("logon", false, "answer the logon screen once, then keep drawing the session")
 	mcpPath := flag.String("mcp", "", "a .mcp.json to read credentials from, for --logon")
 	server := flag.String("server", "", "which server in --mcp to use")
-	user := flag.String("user", "", "logon user (password from ODGP_PASSWORD); overrides --mcp")
+	user := flag.String("user", "", "logon user (password from ODG_PASSWORD); overrides --mcp")
 	client := flag.String("client", "", "logon client; with --user")
 	lang := flag.String("lang", "EN", "logon language; with --user")
 	compress := flag.Bool("compress", false, "LZH-compress the frames we send (default off: DIAG accepts plain)")
@@ -307,7 +307,7 @@ func fkeyStep(step string) (int, bool) {
 }
 
 // resolveCreds gathers logon credentials: from a .mcp.json server when --mcp
-// is given, else from --user with the password in ODGP_PASSWORD.
+// is given, else from --user with the password in ODG_PASSWORD.
 func resolveCreds(mcpPath, server, user, client, lang string) (credentials, string, error) {
 	if mcpPath != "" {
 		if server == "" {
@@ -318,9 +318,9 @@ func resolveCreds(mcpPath, server, user, client, lang string) (credentials, stri
 	if user == "" {
 		return credentials{}, "", fmt.Errorf("give --mcp/--server or --user")
 	}
-	pw := os.Getenv("ODGP_PASSWORD")
+	pw := os.Getenv("ODG_PASSWORD")
 	if pw == "" {
-		return credentials{}, "", fmt.Errorf("set ODGP_PASSWORD for --user %s", user)
+		return credentials{}, "", fmt.Errorf("set ODG_PASSWORD for --user %s", user)
 	}
 	return credentials{Client: client, User: user, Password: pw, Lang: lang}, "", nil
 }
@@ -380,7 +380,7 @@ type session struct {
 // do not scroll the drawn screen, and returns a cleanup that restores it and
 // prints the log's path. A failure to open the log leaves stderr as it was.
 func redirectStderr(label string) func() {
-	logf, err := os.CreateTemp("", "odgp-tui-*.log")
+	logf, err := os.CreateTemp("", "odg-tui-*.log")
 	if err != nil {
 		return func() {}
 	}

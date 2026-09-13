@@ -7,7 +7,7 @@ captures/*.log
 /lens
 /server
 /C
-odgp-server
+odg-server
 /tui
 
 # throwaway decode/scratch programs (agents + manual)

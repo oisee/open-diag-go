@@ -386,7 +386,7 @@ func sceneTornado(ts float64, scr *frame.Screen) {
 		tiltMax       = 1.15 // ~66°: the highest the camera pitches up
 	)
 	icons := []string{"@0S@", "@0Y@", "@0Z@", "@10@", "@08@", "@09@", "@0A@"}
-	labels := []string{"Go", "DIAG", "SAP", "no ABAP", "odgp", "R/3"}
+	labels := []string{"Go", "DIAG", "SAP", "no ABAP", "odg", "R/3"}
 
 	// The camera pitches from a pure side view (tilt 0) up to a high top-side
 	// view and back, period ~20s. So the swirl reads first as widgets running
@@ -477,7 +477,7 @@ func sceneGreetstorm(ts float64, scr *frame.Screen) {
 		spinFast, spinSlow = 4.5, 1.1
 	)
 	icons := []string{"@0S@", "@0Y@", "@0Z@", "@10@", "@08@", "@09@", "@0A@"}
-	labels := []string{"Go", "DIAG", "SAP", "no ABAP", "odgp", "R/3"}
+	labels := []string{"Go", "DIAG", "SAP", "no ABAP", "odg", "R/3"}
 
 	// The loop has four phases: a tornado, a ramp into the greetings, a long
 	// plateau where the cylinder shows two greets at a time and swaps them one by
@@ -899,7 +899,7 @@ func sceneIcons(ts float64, scr *frame.Screen) {
 
 func sceneStars(ts float64, scr *frame.Screen) {
 	const w, h = 78, 18
-	banner := "  OPEN-DIAG-GO-PRO  ***  the whole character grid, redrawn  ***  driven by Go  "
+	banner := "  OPEN-DIAG-GO  ***  the whole character grid, redrawn  ***  driven by Go  "
 	off := int(ts * 12.0)
 	line := make([]byte, w)
 	for i := 0; i < w; i++ {

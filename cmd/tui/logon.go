@@ -105,7 +105,7 @@ func instanceOf(port string) int {
 // run: a second wrong password would count towards the user's lock, so a
 // logon screen that comes back is shown, not answered.
 //
-// Credentials come from the command line and the ODGP_PASSWORD environment
+// Credentials come from the command line and the ODG_PASSWORD environment
 // variable the user sets in their own shell; this program reads no
 // configuration files for them and never prints the password.
 

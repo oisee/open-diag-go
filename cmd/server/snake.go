@@ -141,7 +141,7 @@ func (g *snakeGame) render() *frame.Screen {
 	defer g.mu.Unlock()
 	const top, left = 1, 2 // board origin inside the frame
 	scr := frame.New(27, 120)
-	scr.Frame(0, 0, g.w+2, g.h+2, "odgp snake  --  drawn by Go, steered by you")
+	scr.Frame(0, 0, g.w+2, g.h+2, "odg snake  --  drawn by Go, steered by you")
 	// The pellet, then the body over it, the head marked apart.
 	scr.Text(top+g.food.row, left+g.food.col, "$")
 	for i, b := range g.body {
