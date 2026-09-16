@@ -269,20 +269,73 @@ func jokePopup2(popup []byte) []byte {
 // ---- the stub screens ---------------------------------------------------------
 //
 // A stub is what this dispatcher shows when a system with no dialog programs
-// is asked for one: a still screen, the same on every round trip, drawn in
-// the idiom of a machine that has stopped and says so. Two looks, chosen on
-// the command line.
+// is asked for one: a still screen, the same on every round trip. Four of
+// them, and they are a little chronology of machines that stop and tell you
+// so — Spectrum boot, Spectrum failed load, C64 ready, Amiga guru.
+//
+// They are deliberately NOT unified. Each is its own machine's wording,
+// verbatim. What cannot be honoured is the palette: a DIAG dynpro places
+// text on the GUI's canvas and does not set a PAPER, a border or a font, so
+// the Spectrum's white-on-black, the C64's blue and the PETSCII glyphs are
+// out of reach here. The words are the part that carries, and they do.
 
-// stubScreen draws the still screen named by -stub; an unknown name is the
-// guru, because a stub that shows nothing is the blank window this exists
-// to replace.
-func stubScreen(name string) *frame.Screen {
-	switch name {
-	case "spectrum":
-		return stubSpectrum()
-	default:
-		return stubGuru()
+// stubNames is the rotation order: the chronology, oldest first.
+var stubNames = []string{"boot", "tape", "c64", "guru"}
+
+// stubScreen draws the still screen named by -stub. "rotate" walks the
+// chronology, one screen per connection, so n is the connection's number.
+// An unknown name is the tape error, which is the default and the one that
+// says the most: a machine that was asked to load something and could not.
+func stubScreen(name string, n int) *frame.Screen {
+	if name == "rotate" {
+		name = stubNames[n%len(stubNames)]
 	}
+	switch name {
+	case "boot":
+		return stubSpectrumBoot()
+	case "c64":
+		return stubC64()
+	case "guru":
+		return stubGuru()
+	default:
+		return stubTape()
+	}
+}
+
+// stubTape: the Spectrum's canonical failure. A tape that would not load,
+// reported from the bottom line where the Spectrum reported everything.
+// Nothing else on the screen, because the Spectrum said nothing else.
+//
+// It is the default on purpose, and not only for the joke: it is the true
+// sentence. Something asked this system to load and run a program, and it
+// could not. A later version could mean it literally — report a module or
+// artefact that failed to load with the error the 1982 machine already had
+// the right words for.
+func stubTape() *frame.Screen {
+	scr := frame.New(27, 120)
+	scr.Text(22, 1, "R Tape loading error, 0:1")
+	return scr
+}
+
+// stubSpectrumBoot: a 48K that has just been switched on. The copyright
+// line at the bottom, and the K cursor waiting for a keyword. Inverse video
+// is not ours to send, so the cursor is written the way it is written down.
+func stubSpectrumBoot() *frame.Screen {
+	scr := frame.New(27, 120)
+	scr.Text(21, 1, "[K]")
+	scr.Text(23, 1, "(c) 1982 Sinclair Research Ltd")
+	return scr
+}
+
+// stubC64: the machine that greeted everyone with how much memory it had
+// left. Forty columns of it, laid out as the C64 laid it out.
+func stubC64() *frame.Screen {
+	scr := frame.New(27, 120)
+	scr.Text(2, 5, "**** COMMODORE 64 BASIC V2 ****")
+	scr.Text(4, 2, "64K RAM SYSTEM  38911 BASIC BYTES FREE")
+	scr.Text(6, 1, "READY.")
+	scr.Text(7, 1, "\u2588")
+	return scr
 }
 
 // stubGuru: the Amiga's Guru Meditation. The number is the tradition's shape
@@ -298,15 +351,5 @@ func stubGuru() *frame.Screen {
 	scr.Text(10, 10, "It serves ADT, OData and RFC; a program run from Eclipse lands here,")
 	scr.Text(11, 10, "on a dispatcher that draws one screen and holds the line.")
 	scr.Text(13, 10, "Close the window to go back to Eclipse.")
-	return scr
-}
-
-// stubSpectrum: the ZX Spectrum after a reset — an empty screen, and the one
-// line it always printed, bottom left. ASCII only: the copyright sign is not
-// a bet worth placing on the session's code page.
-func stubSpectrum() *frame.Screen {
-	scr := frame.New(27, 120)
-	scr.Text(22, 1, "(c) 1982 Sinclair Research Ltd")
-	scr.Text(24, 1, "open-steamgate: no dialog programs here. Close the window to return to Eclipse.")
 	return scr
 }

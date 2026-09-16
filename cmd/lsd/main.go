@@ -29,7 +29,7 @@ import (
 func main() {
 	listen := flag.String("listen", ":3232", "address SAP GUI connects to; the low two digits are the SAP instance number")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene runs, in milliseconds (wall clock)")
-	stub := flag.String("stub", "", "no show: answer every frame with one still screen — guru | spectrum")
+	stub := flag.String("stub", "tape", "still-screen mode: tape | boot | c64 | guru | rotate; empty plays the light-show")
 	cadenceMS := flag.Int("push-ms", 80, "frame cadence in milliseconds (floored at 60)")
 	flag.Parse()
 
@@ -59,6 +59,9 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "lsd: listening on %s; scene %d ms; cadence %s\n", *listen, *sceneMS, cad)
 	go func() { <-ctx.Done(); ln.Close() }()
+	// Connections are numbered so a rotating stub can walk its chronology,
+	// one screen per GUI that arrives.
+	conn := 0
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -68,7 +71,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "lsd: accept:", err)
 			continue
 		}
-		go serve(ctx, c, a, cad, *stub)
+		conn++
+		go serve(ctx, c, a, cad, *stub, conn-1)
 	}
 }
 
@@ -143,7 +147,7 @@ func instanceFromListen(listen string) int {
 // sends the opening scene and starts pushing frames on a timer; a later frame
 // freezes the show; the window-close (/i) gets the two-popup joke, then a clean
 // session end.
-func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stub string) {
+func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stub string, conn int) {
 	defer c.Close()
 	log := func(format string, x ...any) {
 		fmt.Fprintf(os.Stderr, "[%s] "+format+"\n", append([]any{c.RemoteAddr()}, x...)...)
@@ -244,7 +248,7 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 					closeSession()
 					return
 				}
-				if out := staticRespondWrap(a.cap, screenFrame, stubScreen(stub)); out != nil {
+				if out := staticRespondWrap(a.cap, screenFrame, stubScreen(stub, conn)); out != nil {
 					_ = send("stub "+stub, out)
 				}
 				continue
