@@ -532,7 +532,12 @@ func listTape() []diag.ListSegment {
 // waiting for a keyword, the copyright at the foot.
 func listSpectrumBoot() []diag.ListSegment {
 	const credit = "(c) 1982 Oisee Research Ltd"
-	out := listClear()
+	// a Spectrum's border surrounded the paper on all four sides, so the
+	// border colour goes down first and the paper is inset into it. At boot
+	// the real border was the same white as the paper; this one is the
+	// palest band we have, which shows the shape without shouting.
+	out := listFill(0, 0, listCols, listRows, diag.ColNormal)
+	out = append(out, listFill(2, 4, listCols-8, listRows-4, diag.ColOff)...)
 	col := listCentre(len(credit))
 	out = append(out, listSay(listRows-4, col, diag.ColOff, credit))
 	return out
