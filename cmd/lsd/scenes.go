@@ -522,7 +522,9 @@ func listTape() []diag.ListSegment {
 	out := listClear()
 	out = append(out, spectrumStripes()...)
 	out = append(out, listFill(2, 4, listCols-8, listRows-4, diag.ColOff)...)
-	out = append(out, listSay(listRows-4, listCentre(len(msg)), diag.ColOff, msg))
+	// left, where the Spectrum printed its system messages; the credit on the
+	// boot screen is the centred one, and they are not the same kind of line
+	out = append(out, listSay(listRows-4, 5, diag.ColOff, msg))
 	return out
 }
 
