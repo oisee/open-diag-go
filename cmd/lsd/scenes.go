@@ -353,3 +353,152 @@ func stubGuru() *frame.Screen {
 	scr.Text(13, 10, "Close the window to go back to Eclipse.")
 	return scr
 }
+
+// ---- the stub screens, in the list channel ------------------------------------
+//
+// A classic list is a character grid the GUI draws in its fixed-pitch list
+// font, and every run carries a colour that is a whole band — foreground and
+// background together. So the list channel gives the stubs what a dynpro
+// could not: a monospace face, a filled screen, and a border, all by writing
+// runs of spaces in a colour.
+//
+// What it still does not give is a palette. The eight SAP list colours are
+// pastel bands with dark text — there is no black paper, no saturated C64
+// blue, no red-on-black. So these are not reproductions; they are the four
+// machines rendered in the colours a SAP report has. The Spectrum comes off
+// best, because black on white is what a Spectrum actually showed.
+
+// the list grid the stubs draw on: a classic 80x24 list page.
+const listCols, listRows = 80, 24
+
+// listFill paints a solid rectangle by writing rows of spaces in one colour.
+func listFill(row, col, w, h int, colour byte) []diag.ListSegment {
+	out := make([]diag.ListSegment, 0, h)
+	for r := 0; r < h; r++ {
+		out = append(out, diag.ListText(row+r, col, colour, strings.Repeat(" ", w)))
+	}
+	return out
+}
+
+// stubListSegments draws the named stub on the list grid. Fills go down
+// first and text on top, because a later run overwrites the cells an earlier
+// one painted.
+func stubListSegments(name string, n int) []diag.ListSegment {
+	if name == "rotate" {
+		name = stubNames[n%len(stubNames)]
+	}
+	switch name {
+	case "boot":
+		return listSpectrumBoot()
+	case "c64":
+		return listC64()
+	case "guru":
+		return listGuru()
+	default:
+		return listTape()
+	}
+}
+
+// spectrumStripes is the loading border every Spectrum owner watched: bands
+// of colour down both edges and across the top and bottom. The real thing
+// striped while the tape ran and stopped when it failed; this is the picture
+// the error belongs to, in the four pastels nearest the original.
+func spectrumStripes() []diag.ListSegment {
+	bands := []byte{diag.ColNegative, diag.ColKey, diag.ColTotal, diag.ColPositive}
+	var out []diag.ListSegment
+	for r := 0; r < listRows; r++ {
+		c := bands[(r/2)%len(bands)]
+		out = append(out, diag.ListText(r, 0, c, strings.Repeat(" ", 4)))
+		out = append(out, diag.ListText(r, listCols-4, c, strings.Repeat(" ", 4)))
+	}
+	for i, r := range []int{0, 1, listRows - 2, listRows - 1} {
+		c := bands[i%len(bands)]
+		out = append(out, diag.ListText(r, 4, c, strings.Repeat(" ", listCols-8)))
+	}
+	return out
+}
+
+// listTape: the Spectrum's canonical failure, inside the striped border,
+// reported from the bottom of the paper the way the Spectrum reported
+// everything.
+func listTape() []diag.ListSegment {
+	out := spectrumStripes()
+	out = append(out, listFill(2, 4, listCols-8, listRows-4, diag.ColOff)...)
+	out = append(out, diag.ListText(listRows-3, 5, diag.ColOff, "R Tape loading error, 0:1"))
+	return out
+}
+
+// listSpectrumBoot: a 48K just switched on — white paper, the K cursor
+// waiting for a keyword, the copyright at the foot.
+func listSpectrumBoot() []diag.ListSegment {
+	out := listFill(0, 0, listCols, listRows, diag.ColOff)
+	out = append(out, diag.ListText(listRows-4, 1, diag.ColOff, "[K]"))
+	out = append(out, diag.ListText(listRows-2, 1, diag.ColOff, "(c) 1982 Sinclair Research Ltd"))
+	return out
+}
+
+// listC64: forty columns of blue, a border around them, and the greeting
+// that told you how much memory was left.
+func listC64() []diag.ListSegment {
+	const w, h = 44, 18
+	left, top := (listCols-w)/2, 2
+	out := listFill(top-2, left-4, w+8, h+4, diag.ColHeading) // the border
+	out = append(out, listFill(top, left, w, h, diag.ColKey)...)
+	out = append(out, diag.ListText(top+2, left+6, diag.ColKey, "**** COMMODORE 64 BASIC V2 ****"))
+	out = append(out, diag.ListText(top+4, left+2, diag.ColKey, "64K RAM SYSTEM  38911 BASIC BYTES FREE"))
+	out = append(out, diag.ListText(top+6, left+1, diag.ColKey, "READY."))
+	out = append(out, diag.ListText(top+7, left+1, diag.ColKey, "█"))
+	return out
+}
+
+// listGuru: the alert box. The Amiga's was red on black and blinked; a list
+// has neither black nor a blink, so it is the red band that carries it.
+func listGuru() []diag.ListSegment {
+	out := listFill(0, 0, listCols, listRows, diag.ColOff)
+	out = append(out, listFill(2, 4, listCols-8, 5, diag.ColNegative)...)
+	out = append(out, diag.ListText(3, 12, diag.ColNegative, "Software Failure.   Press left mouse button to continue."))
+	out = append(out, diag.ListText(5, 23, diag.ColNegative, "Guru Meditation #4F534400.000000F8"))
+	out = append(out, diag.ListText(10, 6, diag.ColOff, "This is open-steamgate: an ABAP system with no dialog layer."))
+	out = append(out, diag.ListText(11, 6, diag.ColOff, "It serves ADT, OData and RFC; a program run from Eclipse lands here,"))
+	out = append(out, diag.ListText(12, 6, diag.ColOff, "on a dispatcher that draws one screen and holds the line."))
+	out = append(out, diag.ListText(14, 6, diag.ColOff, "Close the window to go back to Eclipse."))
+	return out
+}
+
+// listStubFrame splices the stub's runs into the embedded list wrapper, the
+// same way the LED scenes reach the list channel: keep the wrapper's own
+// items, drop its list runs, put ours where they were.
+func listStubFrame(listWrap []byte, segs []diag.ListSegment) []byte {
+	if listWrap == nil {
+		return nil
+	}
+	lm, err := diag.ParseMessage(listWrap, false)
+	if err != nil {
+		return nil
+	}
+	var keep []diag.Item
+	insertAt := -1
+	for _, it := range diag.ParseItems(lm.Body) {
+		isList := it.Type == diag.ItemSBA || it.Type == diag.ItemSFE || it.Type == diag.ItemSLC ||
+			(it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x0b)
+		if isList {
+			if insertAt < 0 {
+				insertAt = len(keep)
+			}
+			continue
+		}
+		keep = append(keep, it)
+	}
+	if insertAt < 0 {
+		insertAt = len(keep)
+	}
+	hdr := lm.Header
+	hdr.Compress = 0
+	mine := diag.EncodeListItems(segs)
+	out := append(append(append([]diag.Item{}, keep[:insertAt]...), mine...), keep[insertAt:]...)
+	msg, err := diag.EncodeMessage(hdr, out, false)
+	if err != nil {
+		return nil
+	}
+	return msg
+}
