@@ -245,7 +245,7 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 			// system with no dialog programs says when something lands on
 			// its dispatcher — the window is a screen, not a blank.
 			if stub != "" {
-				if perr == nil && isClose(items) {
+				if perr == nil && isExit(items) {
 					closeSession()
 					return
 				}

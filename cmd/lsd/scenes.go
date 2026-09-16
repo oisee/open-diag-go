@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -192,6 +193,25 @@ func isClose(items []diag.Item) bool {
 	return false
 }
 
+// isExit is how a session really ends, which is not what isClose knew.
+// Closing the embedded SAP GUI tab in Eclipse sends the OK-code "/NEX" —
+// leave every session, now — and answering that with another screen is how
+// sapguiserver.exe ends up reporting a broken command pipe: it had said
+// goodbye and we handed it a dynpro. Measured on our own capture
+// (.local/capture/osd-f8, the 51-byte closing frame). The other exit codes
+// are here for the same reason, since a GUI may send any of them.
+func isExit(items []diag.Item) bool {
+	for _, it := range items {
+		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x04 {
+			switch strings.ToUpper(strings.TrimSpace(string(it.Value))) {
+			case "/I", "/NEX", "/NEND", "/N/EX":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func isNewWindow(items []diag.Item) bool {
 	for _, it := range items {
 		if it.Type == diag.ItemAPPL && it.ID == 0x0c && it.SID == 0x04 && strings.HasPrefix(strings.TrimSpace(string(it.Value)), "/o") {
@@ -279,8 +299,29 @@ func jokePopup2(popup []byte) []byte {
 // the Spectrum's white-on-black, the C64's blue and the PETSCII glyphs are
 // out of reach here. The words are the part that carries, and they do.
 
-// stubNames is the rotation order: the chronology, oldest first.
-var stubNames = []string{"boot", "tape", "c64", "guru"}
+// stubNames is the chronology, oldest first, and stubWeights is how often
+// each one comes up under "rotate". Halving: the tape error is the house
+// screen and the guru is the one you are pleased to see.
+var stubNames = []string{"tape", "boot", "c64", "guru"}
+var stubWeights = []int{8, 4, 2, 1} // 0.53 / 0.27 / 0.13 / 0.07
+
+// pickStub draws a screen at random by weight. It is a draw per connection,
+// not a cycle, so two F8s in a row can land on the same screen — which is
+// what a probability means and what makes the rare one worth something.
+func pickStub() string {
+	total := 0
+	for _, w := range stubWeights {
+		total += w
+	}
+	n := rand.Intn(total)
+	for i, w := range stubWeights {
+		if n < w {
+			return stubNames[i]
+		}
+		n -= w
+	}
+	return stubNames[0]
+}
 
 // stubScreen draws the still screen named by -stub. "rotate" walks the
 // chronology, one screen per connection, so n is the connection's number.
@@ -288,7 +329,7 @@ var stubNames = []string{"boot", "tape", "c64", "guru"}
 // says the most: a machine that was asked to load something and could not.
 func stubScreen(name string, n int) *frame.Screen {
 	if name == "rotate" {
-		name = stubNames[n%len(stubNames)]
+		name = pickStub()
 	}
 	switch name {
 	case "boot":
@@ -322,8 +363,7 @@ func stubTape() *frame.Screen {
 // is not ours to send, so the cursor is written the way it is written down.
 func stubSpectrumBoot() *frame.Screen {
 	scr := frame.New(27, 120)
-	scr.Text(21, 1, "[K]")
-	scr.Text(23, 1, "(c) 1982 Sinclair Research Ltd")
+	scr.Text(23, 1, "(c) 1982 Oisee Research Ltd")
 	return scr
 }
 
@@ -334,7 +374,6 @@ func stubC64() *frame.Screen {
 	scr.Text(2, 5, "**** COMMODORE 64 BASIC V2 ****")
 	scr.Text(4, 2, "64K RAM SYSTEM  38911 BASIC BYTES FREE")
 	scr.Text(6, 1, "READY.")
-	scr.Text(7, 1, "\u2588")
 	return scr
 }
 
@@ -368,10 +407,37 @@ func stubGuru() *frame.Screen {
 // machines rendered in the colours a SAP report has. The Spectrum comes off
 // best, because black on white is what a Spectrum actually showed.
 
+// ascii keeps a run to one byte per column, which is not a style rule but a
+// crash fix. A list run declares its length in the SLC item, and both
+// ListText and the dynpro atoms take that length from len(text) — the BYTE
+// count. A multi-byte character therefore declares more columns than it
+// paints, and SAP GUI does not survive the difference: a block cursor
+// (U+2588, three bytes) took sapguiserver.exe down with a Sapfewdbg
+// exception and a broken command pipe. Until a length is counted in runes,
+// everything these screens send is 7-bit, and this is where that is enforced
+// rather than remembered.
+func ascii(s string) string {
+	out := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r >= 0x20 && r < 0x7f {
+			out = append(out, byte(r))
+		} else {
+			out = append(out, '?')
+		}
+	}
+	return string(out)
+}
+
 // the list grid the stubs draw on: a classic 80x24 list page.
 const listCols, listRows = 80, 24
 
 // listFill paints a solid rectangle by writing rows of spaces in one colour.
+// listSay is ListText with the ascii guard, and every stub run goes through
+// it rather than calling ListText directly.
+func listSay(row, col int, colour byte, text string) diag.ListSegment {
+	return diag.ListText(row, col, colour, ascii(text))
+}
+
 func listFill(row, col, w, h int, colour byte) []diag.ListSegment {
 	out := make([]diag.ListSegment, 0, h)
 	for r := 0; r < h; r++ {
@@ -385,7 +451,7 @@ func listFill(row, col, w, h int, colour byte) []diag.ListSegment {
 // one painted.
 func stubListSegments(name string, n int) []diag.ListSegment {
 	if name == "rotate" {
-		name = stubNames[n%len(stubNames)]
+		name = pickStub()
 	}
 	switch name {
 	case "boot":
@@ -408,12 +474,12 @@ func spectrumStripes() []diag.ListSegment {
 	var out []diag.ListSegment
 	for r := 0; r < listRows; r++ {
 		c := bands[(r/2)%len(bands)]
-		out = append(out, diag.ListText(r, 0, c, strings.Repeat(" ", 4)))
-		out = append(out, diag.ListText(r, listCols-4, c, strings.Repeat(" ", 4)))
+		out = append(out, listSay(r, 0, c, strings.Repeat(" ", 4)))
+		out = append(out, listSay(r, listCols-4, c, strings.Repeat(" ", 4)))
 	}
 	for i, r := range []int{0, 1, listRows - 2, listRows - 1} {
 		c := bands[i%len(bands)]
-		out = append(out, diag.ListText(r, 4, c, strings.Repeat(" ", listCols-8)))
+		out = append(out, listSay(r, 4, c, strings.Repeat(" ", listCols-8)))
 	}
 	return out
 }
@@ -424,7 +490,7 @@ func spectrumStripes() []diag.ListSegment {
 func listTape() []diag.ListSegment {
 	out := spectrumStripes()
 	out = append(out, listFill(2, 4, listCols-8, listRows-4, diag.ColOff)...)
-	out = append(out, diag.ListText(listRows-3, 5, diag.ColOff, "R Tape loading error, 0:1"))
+	out = append(out, listSay(listRows-3, 5, diag.ColOff, "R Tape loading error, 0:1"))
 	return out
 }
 
@@ -432,8 +498,7 @@ func listTape() []diag.ListSegment {
 // waiting for a keyword, the copyright at the foot.
 func listSpectrumBoot() []diag.ListSegment {
 	out := listFill(0, 0, listCols, listRows, diag.ColOff)
-	out = append(out, diag.ListText(listRows-4, 1, diag.ColOff, "[K]"))
-	out = append(out, diag.ListText(listRows-2, 1, diag.ColOff, "(c) 1982 Sinclair Research Ltd"))
+	out = append(out, listSay(listRows-2, 1, diag.ColOff, "(c) 1982 Oisee Research Ltd"))
 	return out
 }
 
@@ -444,10 +509,10 @@ func listC64() []diag.ListSegment {
 	left, top := (listCols-w)/2, 2
 	out := listFill(top-2, left-4, w+8, h+4, diag.ColHeading) // the border
 	out = append(out, listFill(top, left, w, h, diag.ColKey)...)
-	out = append(out, diag.ListText(top+2, left+6, diag.ColKey, "**** COMMODORE 64 BASIC V2 ****"))
-	out = append(out, diag.ListText(top+4, left+2, diag.ColKey, "64K RAM SYSTEM  38911 BASIC BYTES FREE"))
-	out = append(out, diag.ListText(top+6, left+1, diag.ColKey, "READY."))
-	out = append(out, diag.ListText(top+7, left+1, diag.ColKey, "█"))
+	out = append(out, listSay(top+2, left+6, diag.ColKey, "**** COMMODORE 64 BASIC V2 ****"))
+	out = append(out, listSay(top+4, left+2, diag.ColKey, "64K RAM SYSTEM  38911 BASIC BYTES FREE"))
+	out = append(out, listSay(top+6, left+1, diag.ColKey, "READY."))
+	out = append(out, listSay(top+7, left+1, diag.ColKey, "█"))
 	return out
 }
 
@@ -456,12 +521,12 @@ func listC64() []diag.ListSegment {
 func listGuru() []diag.ListSegment {
 	out := listFill(0, 0, listCols, listRows, diag.ColOff)
 	out = append(out, listFill(2, 4, listCols-8, 5, diag.ColNegative)...)
-	out = append(out, diag.ListText(3, 12, diag.ColNegative, "Software Failure.   Press left mouse button to continue."))
-	out = append(out, diag.ListText(5, 23, diag.ColNegative, "Guru Meditation #4F534400.000000F8"))
-	out = append(out, diag.ListText(10, 6, diag.ColOff, "This is open-steamgate: an ABAP system with no dialog layer."))
-	out = append(out, diag.ListText(11, 6, diag.ColOff, "It serves ADT, OData and RFC; a program run from Eclipse lands here,"))
-	out = append(out, diag.ListText(12, 6, diag.ColOff, "on a dispatcher that draws one screen and holds the line."))
-	out = append(out, diag.ListText(14, 6, diag.ColOff, "Close the window to go back to Eclipse."))
+	out = append(out, listSay(3, 12, diag.ColNegative, "Software Failure.   Press left mouse button to continue."))
+	out = append(out, listSay(5, 23, diag.ColNegative, "Guru Meditation #4F534400.000000F8"))
+	out = append(out, listSay(10, 6, diag.ColOff, "This is open-steamgate: an ABAP system with no dialog layer."))
+	out = append(out, listSay(11, 6, diag.ColOff, "It serves ADT, OData and RFC; a program run from Eclipse lands here,"))
+	out = append(out, listSay(12, 6, diag.ColOff, "on a dispatcher that draws one screen and holds the line."))
+	out = append(out, listSay(14, 6, diag.ColOff, "Close the window to go back to Eclipse."))
 	return out
 }
 
