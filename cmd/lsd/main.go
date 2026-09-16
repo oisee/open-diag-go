@@ -11,6 +11,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -29,6 +30,7 @@ import (
 func main() {
 	listen := flag.String("listen", ":3232", "address SAP GUI connects to; the low two digits are the SAP instance number")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene runs, in milliseconds (wall clock)")
+	hold := flag.Duration("stub-hold", 12*time.Second, "how long a stub screen stays before the session ends itself; 0 waits for the user")
 	stub := flag.String("stub", "tape", "still-screen mode: tape | boot | c64 | guru | rotate; empty plays the light-show")
 	dynpro := flag.Bool("stub-dynpro", false, "draw the stub as a dynpro instead of a classic list (no colour, no border)")
 	cadenceMS := flag.Int("push-ms", 80, "frame cadence in milliseconds (floored at 60)")
@@ -73,7 +75,7 @@ func main() {
 			continue
 		}
 		conn++
-		go serve(ctx, c, a, cad, *stub, conn-1, *dynpro)
+		go serve(ctx, c, a, cad, *stub, conn-1, *dynpro, *hold)
 	}
 }
 
@@ -148,7 +150,7 @@ func instanceFromListen(listen string) int {
 // sends the opening scene and starts pushing frames on a timer; a later frame
 // freezes the show; the window-close (/i) gets the two-popup joke, then a clean
 // session end.
-func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stub string, conn int, dynpro bool) {
+func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stub string, conn int, dynpro bool, hold time.Duration) {
 	defer c.Close()
 	log := func(format string, x ...any) {
 		fmt.Fprintf(os.Stderr, "[%s] "+format+"\n", append([]any{c.RemoteAddr()}, x...)...)
@@ -201,6 +203,21 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 	for {
 		n, err := c.Read(buf)
 		if err != nil {
+			// The hold expiring is not a failure, it is the session ending
+			// the way a real one ends. Measured on the A4H oracle: the
+			// server answers the last exchange, and about two seconds later
+			// sends the bare end-of-session frame on its own. The client
+			// never asks to close — the GUI shuts its own window and hands
+			// control back to Eclipse, which is why jumping in and out of
+			// SAP GUI there is clean. Our stub used to sit there until the
+			// window was closed by hand, and that path (/NEX from the
+			// client) is the one Eclipse complains about.
+			var ne net.Error
+			if stub != "" && hold > 0 && errors.As(err, &ne) && ne.Timeout() {
+				log("stub: shown for %s, ending the session", hold)
+				closeSession()
+				return
+			}
 			log("closed: %v", err)
 			return
 		}
@@ -281,11 +298,17 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 				if !dynpro {
 					if out := listStubFrame(a.listWrap, stubListSegments(stub, conn), first); out != nil {
 						_ = send("stub "+stub+" (list)", out)
+						if hold > 0 {
+							_ = c.SetReadDeadline(time.Now().Add(hold))
+						}
 						continue
 					}
 				}
 				if out := staticRespondWrap(a.cap, screenFrame, stubScreen(stub, conn)); out != nil {
 					_ = send("stub "+stub+" (dynpro)", out)
+					if hold > 0 {
+						_ = c.SetReadDeadline(time.Now().Add(hold))
+					}
 				}
 				continue
 			}
