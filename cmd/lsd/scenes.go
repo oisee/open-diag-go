@@ -535,7 +535,6 @@ func listSpectrumBoot() []diag.ListSegment {
 	out := listClear()
 	col := listCentre(len(credit))
 	out = append(out, listSay(listRows-4, col, diag.ColOff, credit))
-	out = append(out, listCursor(listRows-2, col, "K"))
 	return out
 }
 
