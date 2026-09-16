@@ -503,16 +503,19 @@ func (g *grid) centre(width int) int {
 }
 
 // segments encodes the grid the way a report would have written it: per row,
-// left to right, equal neighbours merged, and trailing default-coloured
-// blanks dropped, because a report does not write past the end of its line.
+// left to right, equal neighbours merged.
+//
+// Every row is written to its full width, and that is not waste. A list is
+// cumulative — the GUI keeps the cells an earlier frame painted — so a row
+// that stops short leaves whatever was there before it, and switching
+// screens left the previous one's border down the right-hand side. Trimming
+// the trailing blanks was an optimisation that cost the only property that
+// matters here: a frame is a whole page, not a patch.
 func (g *grid) segments() []diag.ListSegment {
 	var out []diag.ListSegment
 	for r := 0; r < g.rows; r++ {
 		row := g.cells[r*g.cols : (r+1)*g.cols]
 		end := g.cols
-		for end > 0 && row[end-1].ch == ' ' && row[end-1].colour == diag.ColOff {
-			end--
-		}
 		for c := 0; c < end; {
 			start, colour := c, row[c].colour
 			var text []byte

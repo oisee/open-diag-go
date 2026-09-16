@@ -180,6 +180,7 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 	dec, _ := ni.NewFrameDecoder(64 << 20)
 	buf := make([]byte, 64<<10)
 	var pushing chan struct{}
+	seenFirst := false
 	jokeStep := 0
 
 	for {
@@ -201,8 +202,18 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 				}
 				continue
 			}
-			// The client's first frame carries a 200-byte DP header.
-			first := jokeStep == 0 && pushing == nil
+			// The client's first frame carries a 200-byte DP header and no
+			// later one does. "Have we answered yet" is the only way to know
+			// that, and it must be its own flag: the light-show could infer
+			// it from `pushing`, because the show starts on the first frame
+			// and never stops, but a stub starts nothing, so pushing stayed
+			// nil forever and every frame had 200 bytes cut off its front.
+			// The header then read at the wrong offset — compress=72 on a
+			// frame that is not compressed — the body failed to decompress,
+			// and we answered a frame we had not understood with a screen.
+			// That is what took SAP GUI down a few frames later.
+			first := !seenFirst
+			seenFirst = true
 			m, perr := diag.ParseMessage(payload, first && len(payload) > diag.DPHeaderLen)
 			items := []diag.Item(nil)
 			if perr == nil {
