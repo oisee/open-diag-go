@@ -29,6 +29,7 @@ import (
 func main() {
 	listen := flag.String("listen", ":3232", "address SAP GUI connects to; the low two digits are the SAP instance number")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene runs, in milliseconds (wall clock)")
+	stub := flag.String("stub", "", "no show: answer every frame with one still screen — guru | spectrum")
 	cadenceMS := flag.Int("push-ms", 80, "frame cadence in milliseconds (floored at 60)")
 	flag.Parse()
 
@@ -67,7 +68,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "lsd: accept:", err)
 			continue
 		}
-		go serve(ctx, c, a, cad)
+		go serve(ctx, c, a, cad, *stub)
 	}
 }
 
@@ -142,7 +143,7 @@ func instanceFromListen(listen string) int {
 // sends the opening scene and starts pushing frames on a timer; a later frame
 // freezes the show; the window-close (/i) gets the two-popup joke, then a clean
 // session end.
-func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration) {
+func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stub string) {
 	defer c.Close()
 	log := func(format string, x ...any) {
 		fmt.Fprintf(os.Stderr, "[%s] "+format+"\n", append([]any{c.RemoteAddr()}, x...)...)
@@ -207,7 +208,7 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration) {
 			}
 
 			// Window close: the joke, then a clean end.
-			if perr == nil && jokeStep == 0 && isClose(items) {
+			if stub == "" && perr == nil && jokeStep == 0 && isClose(items) {
 				if pushing != nil {
 					close(pushing)
 					pushing = nil
@@ -234,6 +235,20 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration) {
 				return
 			}
 			_ = isNewWindow // window handling kept minimal here
+
+			// A stub: the same still screen for every frame, no show. What a
+			// system with no dialog programs says when something lands on
+			// its dispatcher — the window is a screen, not a blank.
+			if stub != "" {
+				if perr == nil && isClose(items) {
+					closeSession()
+					return
+				}
+				if out := staticRespondWrap(a.cap, screenFrame, stubScreen(stub)); out != nil {
+					_ = send("stub "+stub, out)
+				}
+				continue
+			}
 
 			// First frame: open the show and start pushing.
 			if pushing == nil {

@@ -265,3 +265,48 @@ func jokePopup2(popup []byte) []byte {
 		Text(1, 7, "=(").
 		Button(3, 7, 10, "ok", "=OK"))
 }
+
+// ---- the stub screens ---------------------------------------------------------
+//
+// A stub is what this dispatcher shows when a system with no dialog programs
+// is asked for one: a still screen, the same on every round trip, drawn in
+// the idiom of a machine that has stopped and says so. Two looks, chosen on
+// the command line.
+
+// stubScreen draws the still screen named by -stub; an unknown name is the
+// guru, because a stub that shows nothing is the blank window this exists
+// to replace.
+func stubScreen(name string) *frame.Screen {
+	switch name {
+	case "spectrum":
+		return stubSpectrum()
+	default:
+		return stubGuru()
+	}
+}
+
+// stubGuru: the Amiga's Guru Meditation. The number is the tradition's shape
+// with our own words in it: 4F5344 spells OSD, and F8 is the key that brought
+// the user here.
+func stubGuru() *frame.Screen {
+	const w = 100
+	scr := frame.New(27, 120)
+	scr.Frame(2, 8, w, 5, "")
+	scr.Text(3, 8+(w-56)/2, "Software Failure.   Press left mouse button to continue.")
+	scr.Text(5, 8+(w-36)/2, "Guru Meditation #4F534400.000000F8")
+	scr.Text(9, 10, "This is open-steamgate: an ABAP system with no dialog layer.")
+	scr.Text(10, 10, "It serves ADT, OData and RFC; a program run from Eclipse lands here,")
+	scr.Text(11, 10, "on a dispatcher that draws one screen and holds the line.")
+	scr.Text(13, 10, "Close the window to go back to Eclipse.")
+	return scr
+}
+
+// stubSpectrum: the ZX Spectrum after a reset — an empty screen, and the one
+// line it always printed, bottom left. ASCII only: the copyright sign is not
+// a bet worth placing on the session's code page.
+func stubSpectrum() *frame.Screen {
+	scr := frame.New(27, 120)
+	scr.Text(22, 1, "(c) 1982 Sinclair Research Ltd")
+	scr.Text(24, 1, "open-steamgate: no dialog programs here. Close the window to return to Eclipse.")
+	return scr
+}
