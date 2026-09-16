@@ -166,12 +166,27 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 		log("-> %s, %d bytes", what, len(data))
 		return err
 	}
+	// Say goodbye, then let the client hang up.
+	//
+	// Closing the socket ourselves the instant the EOP is written is a
+	// reset in the client's face: it is still reading, and what it gets is
+	// a broken connection rather than an ended session — which is what
+	// Eclipse reports as "the pipe is being closed". A system waits. So do
+	// we, briefly: read until the client goes or the grace runs out, and
+	// only then let the deferred Close run.
 	closeSession := func() {
 		h := diag.Header{ComFlag: diag.FlagTermEOC | diag.FlagTermEOP, MsgInfo: 0x01}
 		if fr, err := ni.EncodeFrame(h.Bytes()); err == nil {
 			_, _ = c.Write(fr)
 		}
 		log("-> session end (EOP)")
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		buf := make([]byte, 4096)
+		for {
+			if _, err := c.Read(buf); err != nil {
+				return
+			}
+		}
 	}
 
 	const screenFrame = 0 // the counter (GV_TICKS) wrapper is at capture index 0
