@@ -264,7 +264,7 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 				// colour bands and therefore a border. The dynpro is the
 				// fallback, and what -stub-dynpro asks for.
 				if !dynpro {
-					if out := listStubFrame(a.listWrap, stubListSegments(stub, conn)); out != nil {
+					if out := listStubFrame(a.listWrap, stubListSegments(stub, conn), first); out != nil {
 						_ = send("stub "+stub+" (list)", out)
 						continue
 					}

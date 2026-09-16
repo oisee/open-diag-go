@@ -465,11 +465,13 @@ type grid struct {
 	cells      []cell
 }
 
-// newGrid is the whole page, blank, with the drawing origin set to the
-// middle so a screen written in its own coordinates lands centred.
+// newGrid is the whole page, blank. The machine's screen sits at the top
+// left of it, where a screen starts: centring it in the window looked like
+// a dialog box rather than a machine, and a 1982 machine did not centre
+// itself either.
 func newGrid() *grid {
 	g := &grid{rows: listRows, cols: listCols}
-	g.ox, g.oy = (listCols-screenCols)/2, (listRows-screenRows)/2
+	g.ox, g.oy = 0, 0
 	g.cells = make([]cell, g.rows*g.cols)
 	for i := range g.cells {
 		g.cells[i] = cell{ch: ' ', colour: diag.ColOff}
@@ -644,7 +646,17 @@ func listGuru() []diag.ListSegment {
 // listStubFrame splices the stub's runs into the embedded list wrapper, the
 // same way the LED scenes reach the list channel: keep the wrapper's own
 // items, drop its list runs, put ours where they were.
-func listStubFrame(listWrap []byte, segs []diag.ListSegment) []byte {
+// full says whether to send the wrapper's own items — the session
+// information, the menu, the toolbar, the function-key table — or only the
+// page.
+//
+// Only the first frame of a session needs them. A real system sends its
+// setup once and then sends screens; we were re-sending the whole thing
+// every time, and SAP GUI rebuilt its toolbar on every frame until it
+// painted a button it had already freed. That is an access violation in
+// COldToolBar::DoPaintExternalButton, which is what the crash dump showed,
+// with CTextfield2::Parse complaining beside it.
+func listStubFrame(listWrap []byte, segs []diag.ListSegment, full bool) []byte {
 	if listWrap == nil {
 		return nil
 	}
@@ -671,7 +683,13 @@ func listStubFrame(listWrap []byte, segs []diag.ListSegment) []byte {
 	hdr := lm.Header
 	hdr.Compress = 0
 	mine := diag.EncodeListItems(segs)
-	out := append(append(append([]diag.Item{}, keep[:insertAt]...), mine...), keep[insertAt:]...)
+	var out []diag.Item
+	if full {
+		out = append(append(append([]diag.Item{}, keep[:insertAt]...), mine...), keep[insertAt:]...)
+	} else {
+		// the page and the end marker, nothing else
+		out = append(mine, diag.Item{Type: diag.ItemEOM})
+	}
 	msg, err := diag.EncodeMessage(hdr, out, false)
 	if err != nil {
 		return nil
