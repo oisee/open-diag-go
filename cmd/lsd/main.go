@@ -32,7 +32,11 @@ func main() {
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene runs, in milliseconds (wall clock)")
 	hold := flag.Duration("stub-hold", 12*time.Second, "how long a stub screen stays before the session ends itself; 0 waits for the user")
 	stub := flag.String("stub", "tape", "still-screen mode: tape | boot | c64 | guru | rotate; empty plays the light-show")
-	dynpro := flag.Bool("stub-dynpro", false, "draw the stub as a dynpro instead of a classic list (no colour, no border)")
+	// The plain dynpro is the default because it is the least the protocol
+	// can be asked to do: one screen, a handful of atoms, no list channel,
+	// no colour bands, no page geometry. The list version is prettier and
+	// has been harder to keep stable, so it is the one you opt into.
+	useList := flag.Bool("stub-list", false, "draw the stub in the classic list channel: colour, a border, and more to go wrong")
 	cadenceMS := flag.Int("push-ms", 80, "frame cadence in milliseconds (floored at 60)")
 	flag.Parse()
 
@@ -75,7 +79,7 @@ func main() {
 			continue
 		}
 		conn++
-		go serve(ctx, c, a, cad, *stub, conn-1, *dynpro, *hold)
+		go serve(ctx, c, a, cad, *stub, conn-1, !*useList, *hold)
 	}
 }
 

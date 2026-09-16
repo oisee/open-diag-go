@@ -352,10 +352,16 @@ func stubScreen(name string, n int) *frame.Screen {
 // could not. A later version could mean it literally — report a module or
 // artefact that failed to load with the error the 1982 machine already had
 // the right words for.
+// The simplest screen the protocol can be asked to draw, and a frame around
+// it: a dynpro group box is a single atom and needs no colour, so it gives
+// the Spectrum's border in monochrome without the list channel underneath.
+// The message prints from the left inside it, where a Spectrum printed its
+// system messages.
 func stubTape() *frame.Screen {
-	scr := frame.New(27, 120)
-	scr.Text(22, 1, "R Tape loading error, 0:1")
-	return scr
+	const w, h = 78, 22
+	return frame.New(27, 120).
+		Frame(1, 1, w, h, "").
+		Text(h-2, 3, "R Tape loading error, 0:1")
 }
 
 // stubSpectrumBoot: a 48K that has just been switched on. The copyright
