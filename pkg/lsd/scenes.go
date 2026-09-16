@@ -1,4 +1,4 @@
-package main
+package lsd
 
 // The light-show scene engine, copied from cmd/server's demo mode (same owner,
 // no attribution needed). Every scene is driven by wall-clock time, so motion is

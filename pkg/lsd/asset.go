@@ -1,4 +1,4 @@
-package main
+package lsd
 
 import (
 	"bytes"

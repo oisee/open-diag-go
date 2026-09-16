@@ -60,3 +60,24 @@ affiliated with, authorized, or endorsed by SAP SE**. "SAP" and related marks
 are trademarks of SAP SE, used here only to name the protocol this speaks.
 Point it at systems you are allowed to test; the public light-show at
 `demo.desude.su:3200` is there to play with.
+
+## osd-up: the local ABAP system as one command
+
+`cmd/osd-up` brings up [open-steamgate](https://github.com/oisee/open-steamgate)
+— the ADT façade with the transpiled system in a child it supervises — and
+mounts, in the same process, the RFC bridge from
+[open-rfc-go](https://github.com/oisee/open-rfc-go) (`pkg/adtbridge`) on the
+gateway port and this repository's DIAG stub (`pkg/lsd`) on the dispatcher
+port. Three terminals become one:
+
+```
+go run ./cmd/osd-up -root ../open-steamgate -instance 6
+#   Eclipse: Custom Application Server, host <your IP>, instance 06 (RFC on 3306)
+#   SAP GUI: the same three values (DIAG on 3206)
+#   Ctrl-C stops all of it
+```
+
+`-dev` adds the workbench's dev loop (a save on disk is a check, a build and
+a recycle), `-stub` picks the still screen SAP GUI gets on F8, `-no-rfc` /
+`-no-diag` leave a door unmounted. The workbench runs under Node until its
+Bun binary exists; the two Go halves are already libraries here.

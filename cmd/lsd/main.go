@@ -1,30 +1,21 @@
-// lsd — the odgp light-show, standalone. A pure-Go rogue SAP GUI DIAG server
-// that plays the demo scene sequence to any SAP GUI that connects. It needs NO
-// external files: the wrapper DIAG frames it splices its scenes into are
-// embedded (compressed, and scrubbed of every identifier — see asset.go and the
-// scratch generator that built show.bin).
+// lsd — the DIAG stub, standalone: a rogue SAP GUI server that answers one
+// still screen (or the light-show) to any SAP GUI that connects, with no
+// external files. The library is pkg/lsd; this is the command over it.
 //
 //	lsd                 # listen on :3232 (SAP instance 32), print the connect banner
-//	lsd -listen :3200   # instance 00
+//	lsd -listen :3201   # instance 01
 package main
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/oisee/open-rfc-go/ni"
-
-	"github.com/oisee/open-diag-go/pkg/diag"
-	"github.com/oisee/open-diag-go/pkg/frame"
+	"github.com/oisee/open-diag-go/pkg/lsd"
 )
 
 func main() {
@@ -32,31 +23,11 @@ func main() {
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene runs, in milliseconds (wall clock)")
 	hold := flag.Duration("stub-hold", 12*time.Second, "how long a stub screen stays before the session ends itself; 0 waits for the user")
 	stub := flag.String("stub", "tape", "still-screen mode: tape | boot | c64 | guru | rotate; empty plays the light-show")
-	// The plain dynpro is the default because it is the least the protocol
-	// can be asked to do: one screen, a handful of atoms, no list channel,
-	// no colour bands, no page geometry. The list version is prettier and
-	// has been harder to keep stable, so it is the one you opt into.
 	useList := flag.Bool("stub-list", false, "draw the stub in the classic list channel: colour, a border, and more to go wrong")
 	cadenceMS := flag.Int("push-ms", 80, "frame cadence in milliseconds (floored at 60)")
 	flag.Parse()
 
-	demoSceneMS = *sceneMS
-
-	a, err := loadAsset()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "lsd: loading embedded show:", err)
-		os.Exit(1)
-	}
-
-	ip := localIPv4()
-	inst := instanceFromListen(*listen)
-	printBanner(ip, inst, *listen)
-
-	cad := time.Duration(*cadenceMS) * time.Millisecond
-	if cad < 60*time.Millisecond {
-		cad = 60 * time.Millisecond
-	}
-
+	lsd.Banner(lsd.LocalIPv4(), lsd.Instance(*listen), *listen)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	ln, err := net.Listen("tcp", *listen)
@@ -64,317 +35,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "lsd:", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "lsd: listening on %s; scene %d ms; cadence %s\n", *listen, *sceneMS, cad)
-	go func() { <-ctx.Done(); ln.Close() }()
-	// Connections are numbered so a rotating stub can walk its chronology,
-	// one screen per GUI that arrives.
-	conn := 0
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			fmt.Fprintln(os.Stderr, "lsd: accept:", err)
-			continue
-		}
-		conn++
-		go serve(ctx, c, a, cad, *stub, conn-1, !*useList, *hold)
+	h := *hold
+	if h == 0 {
+		h = -1 // the command's 0 means "wait for the user"; the library's zero is the default
 	}
-}
-
-func printBanner(ip string, inst int, listen string) {
-	port := listen
-	if strings.HasPrefix(port, ":") {
-		port = port[1:]
-	}
-	if h, p, err := net.SplitHostPort(listen); err == nil {
-		port = p
-		if h != "" {
-			ip = h // an explicit bind host overrides the guessed LAN IP
-		}
-	}
-	fmt.Println("odgp light-show ready.")
-	fmt.Println(`In SAP GUI, add a connection → "Custom Application Server":`)
-	fmt.Printf("   Application Server:  %s\n", ip)
-	fmt.Printf("   Instance Number:     %02d\n", inst)
-	fmt.Println("   System ID:           LSD")
-	fmt.Printf("Then connect (or use the raw sapgui host %s port %s).\n", ip, port)
-	fmt.Println()
-}
-
-// localIPv4 returns the machine's first non-loopback, non-link-local IPv4, or a
-// placeholder when none is found.
-func localIPv4() string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return "<your-LAN-IP>"
-	}
-	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := ifc.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			var ip net.IP
-			switch v := a.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-			ip4 := ip.To4()
-			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
-				continue // skips 127.0.0.1 and 169.254.*
-			}
-			return ip4.String()
-		}
-	}
-	return "<your-LAN-IP>"
-}
-
-// instanceFromListen derives the SAP instance number from the port's low two
-// digits (sapdiag port = 3200 + instance).
-func instanceFromListen(listen string) int {
-	_, p, err := net.SplitHostPort(listen)
-	if err != nil {
-		p = strings.TrimPrefix(listen, ":")
-	}
-	n, err := strconv.Atoi(p)
-	if err != nil {
-		return 0
-	}
-	return n % 100
-}
-
-// serve plays the light-show to one connected GUI: on the first client frame it
-// sends the opening scene and starts pushing frames on a timer; a later frame
-// freezes the show; the window-close (/i) gets the two-popup joke, then a clean
-// session end.
-func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stub string, conn int, dynpro bool, hold time.Duration) {
-	defer c.Close()
-	log := func(format string, x ...any) {
-		fmt.Fprintf(os.Stderr, "[%s] "+format+"\n", append([]any{c.RemoteAddr()}, x...)...)
-	}
-	log("connected")
-
-	send := func(what string, data []byte) error {
-		frameBytes, err := ni.EncodeFrame(data)
-		if err != nil {
-			return err
-		}
-		if _, err := c.Write(frameBytes); err != nil {
-			return err
-		}
-		log("-> %s, %d bytes", what, len(data))
-		return err
-	}
-	// Say goodbye, then let the client hang up.
-	//
-	// Closing the socket ourselves the instant the EOP is written is a
-	// reset in the client's face: it is still reading, and what it gets is
-	// a broken connection rather than an ended session — which is what
-	// Eclipse reports as "the pipe is being closed". A system waits. So do
-	// we, briefly: read until the client goes or the grace runs out, and
-	// only then let the deferred Close run.
-	closeSession := func() {
-		h := diag.Header{ComFlag: diag.FlagTermEOC | diag.FlagTermEOP, MsgInfo: 0x01}
-		if fr, err := ni.EncodeFrame(h.Bytes()); err == nil {
-			_, _ = c.Write(fr)
-		}
-		log("-> session end (EOP)")
-		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
-		buf := make([]byte, 4096)
-		for {
-			if _, err := c.Read(buf); err != nil {
-				return
-			}
-		}
-	}
-
-	const screenFrame = 0 // the counter (GV_TICKS) wrapper is at capture index 0
-	rend := demoRenderer(a.cap, screenFrame, a.listWrap, log)
-
-	dec, _ := ni.NewFrameDecoder(64 << 20)
-	buf := make([]byte, 64<<10)
-	var pushing chan struct{}
-	seenFirst := false
-	jokeStep := 0
-
-	for {
-		n, err := c.Read(buf)
-		if err != nil {
-			// The hold expiring is not a failure, it is the session ending
-			// the way a real one ends. Measured on the A4H oracle: the
-			// server answers the last exchange, and about two seconds later
-			// sends the bare end-of-session frame on its own. The client
-			// never asks to close — the GUI shuts its own window and hands
-			// control back to Eclipse, which is why jumping in and out of
-			// SAP GUI there is clean. Our stub used to sit there until the
-			// window was closed by hand, and that path (/NEX from the
-			// client) is the one Eclipse complains about.
-			var ne net.Error
-			if stub != "" && hold > 0 && errors.As(err, &ne) && ne.Timeout() {
-				log("stub: shown for %s, ending the session", hold)
-				closeSession()
-				return
-			}
-			log("closed: %v", err)
-			return
-		}
-		frames, err := dec.Push(buf[:n])
-		if err != nil {
-			log("ni: %v", err)
-			return
-		}
-		for _, payload := range frames {
-			if name, ok := diag.NIControl(payload); ok {
-				log("<- %s", name)
-				if name == "NI_PING" {
-					_ = send("NI_PONG", []byte("NI_PONG\x00"))
-				}
-				continue
-			}
-			// The client's first frame carries a 200-byte DP header and no
-			// later one does. "Have we answered yet" is the only way to know
-			// that, and it must be its own flag: the light-show could infer
-			// it from `pushing`, because the show starts on the first frame
-			// and never stops, but a stub starts nothing, so pushing stayed
-			// nil forever and every frame had 200 bytes cut off its front.
-			// The header then read at the wrong offset — compress=72 on a
-			// frame that is not compressed — the body failed to decompress,
-			// and we answered a frame we had not understood with a screen.
-			// That is what took SAP GUI down a few frames later.
-			first := !seenFirst
-			seenFirst = true
-			m, perr := diag.ParseMessage(payload, first && len(payload) > diag.DPHeaderLen)
-			items := []diag.Item(nil)
-			if perr == nil {
-				items = diag.ParseItems(m.Body)
-				log("<- client frame, %d bytes, %d items", len(payload), len(items))
-			} else {
-				log("<- client frame, %d bytes (%v)", len(payload), perr)
-			}
-
-			// Window close: the joke, then a clean end.
-			if stub == "" && perr == nil && jokeStep == 0 && isClose(items) {
-				if pushing != nil {
-					close(pushing)
-					pushing = nil
-				}
-				if jp := jokePopup1(a.popup); jp != nil {
-					jokeStep = 1
-					_ = send("joke popup 1", jp)
-					continue
-				}
-				closeSession()
-				return
-			}
-			if jokeStep == 1 {
-				if jp := jokePopup2(a.popup); jp != nil {
-					jokeStep = 2
-					_ = send("joke popup 2", jp)
-					continue
-				}
-				closeSession()
-				return
-			}
-			if jokeStep == 2 {
-				closeSession()
-				return
-			}
-			_ = isNewWindow // window handling kept minimal here
-
-			// A stub: the same still screen for every frame, no show. What a
-			// system with no dialog programs says when something lands on
-			// its dispatcher — the window is a screen, not a blank.
-			if stub != "" {
-				if perr == nil && isExit(items) {
-					closeSession()
-					return
-				}
-				// the list channel first: it has the monospace grid, the
-				// colour bands and therefore a border. The dynpro is the
-				// fallback, and what -stub-dynpro asks for.
-				if !dynpro {
-					if out := listStubFrame(a.listWrap, stubListSegments(stub, conn), first); out != nil {
-						_ = send("stub "+stub+" (list)", out)
-						if hold > 0 {
-							_ = c.SetReadDeadline(time.Now().Add(hold))
-						}
-						continue
-					}
-				}
-				if out := staticRespondWrap(a.cap, screenFrame, stubScreen(stub, conn)); out != nil {
-					_ = send("stub "+stub+" (dynpro)", out)
-					if hold > 0 {
-						_ = c.SetReadDeadline(time.Now().Add(hold))
-					}
-				}
-				continue
-			}
-
-			// First frame: open the show and start pushing.
-			if pushing == nil {
-				_ = send("light-show: opening scene", rend(0))
-				pushing = make(chan struct{})
-				go push(ctx, c, rend, cadence, pushing, log)
-				continue
-			}
-			// A later frame is the user pressing a key: freeze the show.
-			close(pushing)
-			pushing = nil
-			log("show stopped by the user")
-			frozen := frame.New(27, 120).
-				Text(1, 2, "light-show stopped").
-				Text(3, 2, "close the window to exit")
-			if out := staticRespondWrap(a.cap, screenFrame, frozen); out != nil {
-				_ = send("show stopped", out)
-			}
-		}
-	}
-}
-
-// push renders every tick and sends only when the frame changed since the last
-// one sent (adaptive skip-on-unchanged), the same pacing the demo uses.
-func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence time.Duration, stop <-chan struct{}, log func(string, ...any)) {
-	n := 0
-	t := time.NewTicker(cadence)
-	defer t.Stop()
-	var last []byte
-	sent, skipped := 0, 0
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-stop:
-			return
-		case <-t.C:
-		}
-		n++
-		data := render(n)
-		if data == nil {
-			continue
-		}
-		if bytes.Equal(data, last) {
-			skipped++
-			continue
-		}
-		frameBytes, err := ni.EncodeFrame(data)
-		if err != nil {
-			return
-		}
-		if _, err := c.Write(frameBytes); err != nil {
-			log("push: %v", err)
-			return
-		}
-		last = data
-		sent++
-		if sent%20 == 1 {
-			log("-> pushed frame %d (%d bytes; %d sent, %d skipped)", n, len(data), sent, skipped)
-		}
+	fmt.Fprintf(os.Stderr, "lsd: listening on %s; stub %q; scene %d ms\n", *listen, *stub, *sceneMS)
+	if err := lsd.Serve(ctx, ln, lsd.Options{Stub: *stub, Hold: h, List: *useList, SceneMS: *sceneMS, Cadence: time.Duration(*cadenceMS) * time.Millisecond}); err != nil {
+		fmt.Fprintln(os.Stderr, "lsd:", err)
+		os.Exit(1)
 	}
 }
