@@ -431,54 +431,102 @@ func ascii(s string) string {
 // the list grid the stubs draw on: a classic 80x24 list page.
 const listCols, listRows = 80, 24
 
-// listClear paints the whole page before anything else. A classic list is
-// cumulative — the GUI keeps the cells a previous frame painted — so without
-// this a second screen arrives on top of the first and you read both at once
-// (seen: the C64 box sitting in the Spectrum's striped border with the tape
-// error still legible underneath). Clearing is also the cheap guard against
-// the list growing without bound as screens are switched.
-func listClear() []diag.ListSegment {
-	return listFill(0, 0, listCols, listRows, diag.ColOff)
+// A classic list is written a line at a time, left to right, and never
+// painted over: a report emits each row's runs once, in order, and they do
+// not overlap. The first version of these screens ignored that and laid
+// coloured rectangles on top of one another, which is not a shape any ABAP
+// program produces — and SAP GUI met it by closing the connection, which
+// Eclipse reported as a broken command pipe.
+//
+// So the screens draw into a grid of cells, and the grid is encoded per row
+// with equal neighbours merged, exactly the way the LED scenes reach the
+// list channel. Drawing stays as easy to write; what leaves is the overlap,
+// and with it most of the runs.
+
+type cell struct{ ch, colour byte }
+
+type grid struct {
+	rows, cols int
+	cells      []cell
 }
 
-// listCentre is the column at which text of this width starts if it is to sit
-// in the middle of the page.
-func listCentre(width int) int {
-	c := (listCols - width) / 2
-	if c < 0 {
-		return 0
+func newGrid() *grid {
+	g := &grid{rows: listRows, cols: listCols}
+	g.cells = make([]cell, g.rows*g.cols)
+	for i := range g.cells {
+		g.cells[i] = cell{ch: ' ', colour: diag.ColOff}
 	}
-	return c
+	return g
 }
 
-// listCursor is a block cursor, which is a one-character run in a colour that
-// contrasts with what it sits on. That is the whole trick: a list colour is a
-// band of foreground and background together, so a single space in another
-// band IS an inverse block — pseudographics out of the palette, one ASCII
-// byte wide, with none of the column arithmetic a drawing character costs.
-// With text in it ("K") it is the Spectrum's inverse-video keyword cursor.
-func listCursor(row, col int, text string) diag.ListSegment {
-	return listSay(row, col, diag.ColHeading, text)
+// fill paints a rectangle in one colour, leaving the characters blank.
+func (g *grid) fill(row, col, w, h int, colour byte) *grid {
+	for r := row; r < row+h; r++ {
+		for c := col; c < col+w; c++ {
+			if r >= 0 && r < g.rows && c >= 0 && c < g.cols {
+				g.cells[r*g.cols+c] = cell{ch: ' ', colour: colour}
+			}
+		}
+	}
+	return g
 }
 
-// listFill paints a solid rectangle by writing rows of spaces in one colour.
-// listSay is ListText with the ascii guard, and every stub run goes through
-// it rather than calling ListText directly.
-func listSay(row, col int, colour byte, text string) diag.ListSegment {
-	return diag.ListText(row, col, colour, ascii(text))
+// text writes a string, keeping the colour the cells already have, so a line
+// drawn onto a filled area stays on that area's band.
+func (g *grid) text(row, col int, s string) *grid {
+	for i, ch := range []byte(ascii(s)) {
+		if c := col + i; row >= 0 && row < g.rows && c >= 0 && c < g.cols {
+			g.cells[row*g.cols+c].ch = ch
+		}
+	}
+	return g
 }
 
-func listFill(row, col, w, h int, colour byte) []diag.ListSegment {
-	out := make([]diag.ListSegment, 0, h)
-	for r := 0; r < h; r++ {
-		out = append(out, diag.ListText(row+r, col, colour, strings.Repeat(" ", w)))
+// colourText writes a string and sets its cells' colour, for a run with a
+// band of its own — a block cursor, say.
+func (g *grid) colourText(row, col int, colour byte, s string) *grid {
+	for i, ch := range []byte(ascii(s)) {
+		if c := col + i; row >= 0 && row < g.rows && c >= 0 && c < g.cols {
+			g.cells[row*g.cols+c] = cell{ch: ch, colour: colour}
+		}
+	}
+	return g
+}
+
+// centre is the column at which text of this width starts if it is to sit in
+// the middle of the page.
+func (g *grid) centre(width int) int {
+	if c := (g.cols - width) / 2; c > 0 {
+		return c
+	}
+	return 0
+}
+
+// segments encodes the grid the way a report would have written it: per row,
+// left to right, equal neighbours merged, and trailing default-coloured
+// blanks dropped, because a report does not write past the end of its line.
+func (g *grid) segments() []diag.ListSegment {
+	var out []diag.ListSegment
+	for r := 0; r < g.rows; r++ {
+		row := g.cells[r*g.cols : (r+1)*g.cols]
+		end := g.cols
+		for end > 0 && row[end-1].ch == ' ' && row[end-1].colour == diag.ColOff {
+			end--
+		}
+		for c := 0; c < end; {
+			start, colour := c, row[c].colour
+			var text []byte
+			for c < end && row[c].colour == colour {
+				text = append(text, row[c].ch)
+				c++
+			}
+			out = append(out, diag.ListText(r, start, colour, string(text)))
+		}
 	}
 	return out
 }
 
-// stubListSegments draws the named stub on the list grid. Fills go down
-// first and text on top, because a later run overwrites the cells an earlier
-// one painted.
+// stubListSegments draws the named stub on the list grid.
 func stubListSegments(name string, n int) []diag.ListSegment {
 	if name == "rotate" {
 		name = pickStub()
@@ -499,77 +547,72 @@ func stubListSegments(name string, n int) []diag.ListSegment {
 // of colour down both edges and across the top and bottom. The real thing
 // striped while the tape ran and stopped when it failed; this is the picture
 // the error belongs to, in the four pastels nearest the original.
-func spectrumStripes() []diag.ListSegment {
+func spectrumStripes(g *grid) {
 	bands := []byte{diag.ColNegative, diag.ColKey, diag.ColTotal, diag.ColPositive}
-	var out []diag.ListSegment
-	for r := 0; r < listRows; r++ {
+	for r := 0; r < g.rows; r++ {
 		c := bands[(r/2)%len(bands)]
-		out = append(out, listSay(r, 0, c, strings.Repeat(" ", 4)))
-		out = append(out, listSay(r, listCols-4, c, strings.Repeat(" ", 4)))
+		g.fill(r, 0, 4, 1, c)
+		g.fill(r, g.cols-4, 4, 1, c)
 	}
-	for i, r := range []int{0, 1, listRows - 2, listRows - 1} {
-		c := bands[i%len(bands)]
-		out = append(out, listSay(r, 4, c, strings.Repeat(" ", listCols-8)))
+	for i, r := range []int{0, 1, g.rows - 2, g.rows - 1} {
+		g.fill(r, 4, g.cols-8, 1, bands[i%len(bands)])
 	}
-	return out
 }
 
 // listTape: the Spectrum's canonical failure, inside the striped border,
-// reported from the bottom of the paper the way the Spectrum reported
-// everything.
+// printed from the left where the Spectrum printed its system messages. The
+// centred line is the credit on the boot screen; they are not the same kind
+// of line.
 func listTape() []diag.ListSegment {
-	const msg = "R Tape loading error, 0:1"
-	out := listClear()
-	out = append(out, spectrumStripes()...)
-	out = append(out, listFill(2, 4, listCols-8, listRows-4, diag.ColOff)...)
-	// left, where the Spectrum printed its system messages; the credit on the
-	// boot screen is the centred one, and they are not the same kind of line
-	out = append(out, listSay(listRows-4, 5, diag.ColOff, msg))
-	return out
+	g := newGrid()
+	spectrumStripes(g)
+	g.fill(2, 4, g.cols-8, g.rows-4, diag.ColOff)
+	g.text(g.rows-4, 5, "R Tape loading error, 0:1")
+	return g.segments()
 }
 
-// listSpectrumBoot: a 48K just switched on — white paper, the K cursor
-// waiting for a keyword, the copyright at the foot.
+// listSpectrumBoot: a 48K just switched on. A Spectrum's border surrounded
+// the paper on all four sides, so it goes down first and the paper is inset
+// into it; at boot the real border was the same white as the paper, and this
+// is the palest band we have, which shows the shape without shouting.
 func listSpectrumBoot() []diag.ListSegment {
 	const credit = "(c) 1982 Oisee Research Ltd"
-	// a Spectrum's border surrounded the paper on all four sides, so the
-	// border colour goes down first and the paper is inset into it. At boot
-	// the real border was the same white as the paper; this one is the
-	// palest band we have, which shows the shape without shouting.
-	out := listFill(0, 0, listCols, listRows, diag.ColNormal)
-	out = append(out, listFill(2, 4, listCols-8, listRows-4, diag.ColOff)...)
-	col := listCentre(len(credit))
-	out = append(out, listSay(listRows-4, col, diag.ColOff, credit))
-	return out
+	g := newGrid()
+	g.fill(0, 0, g.cols, g.rows, diag.ColNormal)
+	g.fill(2, 4, g.cols-8, g.rows-4, diag.ColOff)
+	g.text(g.rows-4, g.centre(len(credit)), credit)
+	return g.segments()
 }
 
-// listC64: forty columns of blue, a border around them, and the greeting
-// that told you how much memory was left.
+// listC64: forty-odd columns of blue inside a darker frame, and the greeting
+// that told you how much memory was left. The cursor is a one-character run
+// in another band — a list colour carries foreground and background
+// together, so that IS an inverse block, one ASCII byte wide.
 func listC64() []diag.ListSegment {
 	const w, h = 44, 18
-	left, top := (listCols-w)/2, 2
-	out := listClear()
-	out = append(out, listFill(top-2, left-4, w+8, h+4, diag.ColHeading)...) // the border
-	out = append(out, listFill(top, left, w, h, diag.ColKey)...)
-	out = append(out, listSay(top+2, left+6, diag.ColKey, "**** COMMODORE 64 BASIC V2 ****"))
-	out = append(out, listSay(top+4, left+2, diag.ColKey, "64K RAM SYSTEM  38911 BASIC BYTES FREE"))
-	out = append(out, listSay(top+6, left+1, diag.ColKey, "READY."))
-	out = append(out, listSay(top+7, left+1, diag.ColKey, "█"))
-	return out
+	g := newGrid()
+	left, top := (g.cols-w)/2, 2
+	g.fill(top-2, left-4, w+8, h+4, diag.ColHeading)
+	g.fill(top, left, w, h, diag.ColKey)
+	g.text(top+2, left+6, "**** COMMODORE 64 BASIC V2 ****")
+	g.text(top+4, left+2, "64K RAM SYSTEM  38911 BASIC BYTES FREE")
+	g.text(top+6, left+1, "READY.")
+	g.colourText(top+7, left+1, diag.ColHeading, " ")
+	return g.segments()
 }
 
 // listGuru: the alert box. The Amiga's was red on black and blinked; a list
-// has neither black nor a blink, so it is the red band that carries it.
+// has neither black nor a blink, so the red band carries it.
 func listGuru() []diag.ListSegment {
-	out := listClear()
-	out = append(out, listFill(2, 4, listCols-8, 5, diag.ColNegative)...)
-	out = append(out, listSay(3, 12, diag.ColNegative, "Software Failure.   Press left mouse button to continue."))
-	out = append(out, listSay(5, 23, diag.ColNegative, "Guru Meditation #4F534400.000000F8"))
-	out = append(out, listSay(10, 6, diag.ColOff, "This is open-steamgate: an ABAP system with no dialog layer."))
-	out = append(out, listSay(11, 6, diag.ColOff, "It serves ADT, OData and RFC; a program run from Eclipse lands here,"))
-	out = append(out, listSay(12, 6, diag.ColOff, "on a dispatcher that draws one screen and holds the line."))
-	out = append(out, listSay(14, 6, diag.ColOff, "Close the window to go back to Eclipse."))
-	return out
+	g := newGrid()
+	g.fill(2, 4, g.cols-8, 5, diag.ColNegative)
+	g.text(3, 12, "Software Failure.   Press left mouse button to continue.")
+	g.text(5, 23, "Guru Meditation #4F534400.000000F8")
+	g.text(10, 6, "This is open-steamgate: an ABAP system with no dialog layer.")
+	g.text(11, 6, "It serves ADT, OData and RFC; a program run from Eclipse lands here,")
+	g.text(12, 6, "on a dispatcher that draws one screen and holds the line.")
+	g.text(14, 6, "Close the window to go back to Eclipse.")
+	return g.segments()
 }
 
 // listStubFrame splices the stub's runs into the embedded list wrapper, the
