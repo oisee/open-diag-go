@@ -363,7 +363,7 @@ func stubTape() *frame.Screen {
 // is not ours to send, so the cursor is written the way it is written down.
 func stubSpectrumBoot() *frame.Screen {
 	scr := frame.New(27, 120)
-	scr.Text(23, 1, "(c) 1982 Oisee Research Ltd")
+	scr.Text(23, (120-27)/2, "(c) 1982 Oisee Research Ltd")
 	return scr
 }
 
@@ -431,6 +431,36 @@ func ascii(s string) string {
 // the list grid the stubs draw on: a classic 80x24 list page.
 const listCols, listRows = 80, 24
 
+// listClear paints the whole page before anything else. A classic list is
+// cumulative — the GUI keeps the cells a previous frame painted — so without
+// this a second screen arrives on top of the first and you read both at once
+// (seen: the C64 box sitting in the Spectrum's striped border with the tape
+// error still legible underneath). Clearing is also the cheap guard against
+// the list growing without bound as screens are switched.
+func listClear() []diag.ListSegment {
+	return listFill(0, 0, listCols, listRows, diag.ColOff)
+}
+
+// listCentre is the column at which text of this width starts if it is to sit
+// in the middle of the page.
+func listCentre(width int) int {
+	c := (listCols - width) / 2
+	if c < 0 {
+		return 0
+	}
+	return c
+}
+
+// listCursor is a block cursor, which is a one-character run in a colour that
+// contrasts with what it sits on. That is the whole trick: a list colour is a
+// band of foreground and background together, so a single space in another
+// band IS an inverse block — pseudographics out of the palette, one ASCII
+// byte wide, with none of the column arithmetic a drawing character costs.
+// With text in it ("K") it is the Spectrum's inverse-video keyword cursor.
+func listCursor(row, col int, text string) diag.ListSegment {
+	return listSay(row, col, diag.ColHeading, text)
+}
+
 // listFill paints a solid rectangle by writing rows of spaces in one colour.
 // listSay is ListText with the ascii guard, and every stub run goes through
 // it rather than calling ListText directly.
@@ -488,17 +518,22 @@ func spectrumStripes() []diag.ListSegment {
 // reported from the bottom of the paper the way the Spectrum reported
 // everything.
 func listTape() []diag.ListSegment {
-	out := spectrumStripes()
+	const msg = "R Tape loading error, 0:1"
+	out := listClear()
+	out = append(out, spectrumStripes()...)
 	out = append(out, listFill(2, 4, listCols-8, listRows-4, diag.ColOff)...)
-	out = append(out, listSay(listRows-3, 5, diag.ColOff, "R Tape loading error, 0:1"))
+	out = append(out, listSay(listRows-4, listCentre(len(msg)), diag.ColOff, msg))
 	return out
 }
 
 // listSpectrumBoot: a 48K just switched on — white paper, the K cursor
 // waiting for a keyword, the copyright at the foot.
 func listSpectrumBoot() []diag.ListSegment {
-	out := listFill(0, 0, listCols, listRows, diag.ColOff)
-	out = append(out, listSay(listRows-2, 1, diag.ColOff, "(c) 1982 Oisee Research Ltd"))
+	const credit = "(c) 1982 Oisee Research Ltd"
+	out := listClear()
+	col := listCentre(len(credit))
+	out = append(out, listSay(listRows-4, col, diag.ColOff, credit))
+	out = append(out, listCursor(listRows-2, col, "K"))
 	return out
 }
 
@@ -507,7 +542,8 @@ func listSpectrumBoot() []diag.ListSegment {
 func listC64() []diag.ListSegment {
 	const w, h = 44, 18
 	left, top := (listCols-w)/2, 2
-	out := listFill(top-2, left-4, w+8, h+4, diag.ColHeading) // the border
+	out := listClear()
+	out = append(out, listFill(top-2, left-4, w+8, h+4, diag.ColHeading)...) // the border
 	out = append(out, listFill(top, left, w, h, diag.ColKey)...)
 	out = append(out, listSay(top+2, left+6, diag.ColKey, "**** COMMODORE 64 BASIC V2 ****"))
 	out = append(out, listSay(top+4, left+2, diag.ColKey, "64K RAM SYSTEM  38911 BASIC BYTES FREE"))
@@ -519,7 +555,7 @@ func listC64() []diag.ListSegment {
 // listGuru: the alert box. The Amiga's was red on black and blinked; a list
 // has neither black nor a blink, so it is the red band that carries it.
 func listGuru() []diag.ListSegment {
-	out := listFill(0, 0, listCols, listRows, diag.ColOff)
+	out := listClear()
 	out = append(out, listFill(2, 4, listCols-8, 5, diag.ColNegative)...)
 	out = append(out, listSay(3, 12, diag.ColNegative, "Software Failure.   Press left mouse button to continue."))
 	out = append(out, listSay(5, 23, diag.ColNegative, "Guru Meditation #4F534400.000000F8"))
