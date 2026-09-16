@@ -438,6 +438,13 @@ func ascii(s string) string {
 // GUI has nothing there to show. So the grid is the whole page.
 const listCols, listRows = 120, 26
 
+// The machine's screen is a fixed size and sits in the middle of that page.
+// Two sizes, and they do different jobs: the page is what must be painted,
+// or a reused window shows the last session through the gaps; the screen is
+// what a person looks at, and a 1982 machine did not get wider because the
+// window did.
+const screenCols, screenRows = 80, 24
+
 // A classic list is written a line at a time, left to right, and never
 // painted over: a report emits each row's runs once, in order, and they do
 // not overlap. The first version of these screens ignored that and laid
@@ -453,12 +460,16 @@ const listCols, listRows = 120, 26
 type cell struct{ ch, colour byte }
 
 type grid struct {
-	rows, cols int
+	rows, cols int // the page, which is what gets painted
+	ox, oy     int // where the machine's screen starts on it
 	cells      []cell
 }
 
+// newGrid is the whole page, blank, with the drawing origin set to the
+// middle so a screen written in its own coordinates lands centred.
 func newGrid() *grid {
 	g := &grid{rows: listRows, cols: listCols}
+	g.ox, g.oy = (listCols-screenCols)/2, (listRows-screenRows)/2
 	g.cells = make([]cell, g.rows*g.cols)
 	for i := range g.cells {
 		g.cells[i] = cell{ch: ' ', colour: diag.ColOff}
@@ -468,6 +479,7 @@ func newGrid() *grid {
 
 // fill paints a rectangle in one colour, leaving the characters blank.
 func (g *grid) fill(row, col, w, h int, colour byte) *grid {
+	row, col = row+g.oy, col+g.ox
 	for r := row; r < row+h; r++ {
 		for c := col; c < col+w; c++ {
 			if r >= 0 && r < g.rows && c >= 0 && c < g.cols {
@@ -481,6 +493,7 @@ func (g *grid) fill(row, col, w, h int, colour byte) *grid {
 // text writes a string, keeping the colour the cells already have, so a line
 // drawn onto a filled area stays on that area's band.
 func (g *grid) text(row, col int, s string) *grid {
+	row, col = row+g.oy, col+g.ox
 	for i, ch := range []byte(ascii(s)) {
 		if c := col + i; row >= 0 && row < g.rows && c >= 0 && c < g.cols {
 			g.cells[row*g.cols+c].ch = ch
@@ -492,6 +505,7 @@ func (g *grid) text(row, col int, s string) *grid {
 // colourText writes a string and sets its cells' colour, for a run with a
 // band of its own — a block cursor, say.
 func (g *grid) colourText(row, col int, colour byte, s string) *grid {
+	row, col = row+g.oy, col+g.ox
 	for i, ch := range []byte(ascii(s)) {
 		if c := col + i; row >= 0 && row < g.rows && c >= 0 && c < g.cols {
 			g.cells[row*g.cols+c] = cell{ch: ch, colour: colour}
@@ -503,7 +517,7 @@ func (g *grid) colourText(row, col int, colour byte, s string) *grid {
 // centre is the column at which text of this width starts if it is to sit in
 // the middle of the page.
 func (g *grid) centre(width int) int {
-	if c := (g.cols - width) / 2; c > 0 {
+	if c := (screenCols - width) / 2; c > 0 {
 		return c
 	}
 	return 0
@@ -559,13 +573,13 @@ func stubListSegments(name string, n int) []diag.ListSegment {
 // the error belongs to, in the four pastels nearest the original.
 func spectrumStripes(g *grid) {
 	bands := []byte{diag.ColNegative, diag.ColKey, diag.ColTotal, diag.ColPositive}
-	for r := 0; r < g.rows; r++ {
+	for r := 0; r < screenRows; r++ {
 		c := bands[(r/2)%len(bands)]
 		g.fill(r, 0, 4, 1, c)
-		g.fill(r, g.cols-4, 4, 1, c)
+		g.fill(r, screenCols-4, 4, 1, c)
 	}
 	for i, r := range []int{0, 1, g.rows - 2, g.rows - 1} {
-		g.fill(r, 4, g.cols-8, 1, bands[i%len(bands)])
+		g.fill(r, 4, screenCols-8, 1, bands[i%len(bands)])
 	}
 }
 
@@ -576,8 +590,8 @@ func spectrumStripes(g *grid) {
 func listTape() []diag.ListSegment {
 	g := newGrid()
 	spectrumStripes(g)
-	g.fill(2, 4, g.cols-8, g.rows-4, diag.ColOff)
-	g.text(g.rows-4, 5, "R Tape loading error, 0:1")
+	g.fill(2, 4, screenCols-8, screenRows-4, diag.ColOff)
+	g.text(screenRows-4, 5, "R Tape loading error, 0:1")
 	return g.segments()
 }
 
@@ -588,9 +602,9 @@ func listTape() []diag.ListSegment {
 func listSpectrumBoot() []diag.ListSegment {
 	const credit = "(c) 1982 Oisee Research Ltd"
 	g := newGrid()
-	g.fill(0, 0, g.cols, g.rows, diag.ColNormal)
-	g.fill(2, 4, g.cols-8, g.rows-4, diag.ColOff)
-	g.text(g.rows-4, g.centre(len(credit)), credit)
+	g.fill(0, 0, screenCols, screenRows, diag.ColNormal)
+	g.fill(2, 4, screenCols-8, screenRows-4, diag.ColOff)
+	g.text(screenRows-4, g.centre(len(credit)), credit)
 	return g.segments()
 }
 
@@ -601,7 +615,7 @@ func listSpectrumBoot() []diag.ListSegment {
 func listC64() []diag.ListSegment {
 	const w, h = 44, 18
 	g := newGrid()
-	left, top := (g.cols-w)/2, 2
+	left, top := (screenCols-w)/2, 2
 	g.fill(top-2, left-4, w+8, h+4, diag.ColHeading)
 	g.fill(top, left, w, h, diag.ColKey)
 	g.text(top+2, left+6, "**** COMMODORE 64 BASIC V2 ****")
@@ -617,7 +631,7 @@ func listGuru() []diag.ListSegment {
 	g := newGrid()
 	const head = "Software Failure.   Press left mouse button to continue."
 	const code = "Guru Meditation #4F534400.000000F8"
-	g.fill(2, 4, g.cols-8, 5, diag.ColNegative)
+	g.fill(2, 4, screenCols-8, 5, diag.ColNegative)
 	g.text(3, g.centre(len(head)), head)
 	g.text(5, g.centre(len(code)), code)
 	g.text(10, 6, "This is open-steamgate: an ABAP system with no dialog layer.")
