@@ -428,8 +428,15 @@ func ascii(s string) string {
 	return string(out)
 }
 
-// the list grid the stubs draw on: a classic 80x24 list page.
-const listCols, listRows = 80, 24
+// The list page, and it is not a choice: the embedded wrapper's CHL item
+// declares the geometry and the GUI honours it. Measured off our own capture
+// — CHL carries 0000001a (26 rows) and 00000078 (120 columns), twice.
+//
+// Painting a smaller page than the one declared is what made a second F8
+// glitch while the first was clean: the columns past our width and the rows
+// past our height keep whatever the previous session left there, and a fresh
+// GUI has nothing there to show. So the grid is the whole page.
+const listCols, listRows = 120, 26
 
 // A classic list is written a line at a time, left to right, and never
 // painted over: a report emits each row's runs once, in order, and they do
@@ -608,9 +615,11 @@ func listC64() []diag.ListSegment {
 // has neither black nor a blink, so the red band carries it.
 func listGuru() []diag.ListSegment {
 	g := newGrid()
+	const head = "Software Failure.   Press left mouse button to continue."
+	const code = "Guru Meditation #4F534400.000000F8"
 	g.fill(2, 4, g.cols-8, 5, diag.ColNegative)
-	g.text(3, 12, "Software Failure.   Press left mouse button to continue.")
-	g.text(5, 23, "Guru Meditation #4F534400.000000F8")
+	g.text(3, g.centre(len(head)), head)
+	g.text(5, g.centre(len(code)), code)
 	g.text(10, 6, "This is open-steamgate: an ABAP system with no dialog layer.")
 	g.text(11, 6, "It serves ADT, OData and RFC; a program run from Eclipse lands here,")
 	g.text(12, 6, "on a dispatcher that draws one screen and holds the line.")
