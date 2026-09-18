@@ -44,6 +44,54 @@ const (
 
 var lzhSig = []byte{0x1f, 0x9d}
 
+// CompressLevel is the compress/flate level Compress uses. It is a package var
+// so a live test can force flate.NoCompression (DEFLATE stored blocks): if a
+// real SAP GUI accepts a stored-block stream but not our default dynamic-Huffman
+// one, the GUI's inflate is stricter than the round-trip decoder and stored is
+// the compatible form. Default is flate.DefaultCompression.
+var CompressLevel = flate.DefaultCompression
+
+// CompressExact encodes data as a complete SAP-LZH stream of exactly total
+// bytes (header included) that sapcompress.Decompress decodes back to exactly
+// data. It exists for recolouring in place: an ALV blob is read positionally by
+// a compressed-length prefix, so a recoloured blob must keep the original's byte
+// length or the sibling blobs after it move and the grid vanishes — yet padding
+// the stream with raw zero bytes leaves the DEFLATE stream unterminated, and a
+// real GUI then hangs waiting for more. CompressExact instead pads inside the
+// DEFLATE stream with empty *Huffman* blocks (stored blocks desync SAP's reader
+// at the two-bit prefix offset) and ends with a final (BFINAL=1) block, so the
+// stream is valid, alignment-free and terminated at exactly the target length.
+// Returns false if data cannot be encoded within total bytes.
+func CompressExact(data []byte, total int) ([]byte, bool) {
+	if total < headerSize+2 {
+		return nil, false
+	}
+	// The body is the DEFLATE stream shifted left two bits plus one carry byte,
+	// so a body of B bytes needs a DEFLATE stream of B-1 bytes. total = header +
+	// body, so the DEFLATE target is total-headerSize-1.
+	def, ok := deflateExactHuffman(data, total-headerSize-1)
+	if !ok {
+		return nil, false
+	}
+	out := make([]byte, headerSize, total)
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(data)))
+	out[4] = algLZH
+	out[5] = lzhSig[0]
+	out[6] = lzhSig[1]
+	out[7] = 0x00
+	const p = compressPrefixBits
+	var carry byte
+	for i := 0; i < len(def); i++ {
+		out = append(out, (def[i]<<p)|carry)
+		carry = def[i] >> (8 - p)
+	}
+	out = append(out, carry)
+	if len(out) != total {
+		return nil, false
+	}
+	return out, true
+}
+
 // Compress encodes data as a complete SAP-LZH stream (header included) that
 // sapcompress.Decompress decodes back to exactly data. It is the precise
 // inverse of that decoder's inflate step.
@@ -60,7 +108,7 @@ func Compress(data []byte) ([]byte, error) {
 	// 1. Raw DEFLATE. compress/flate writes a headerless RFC-1951 stream, which
 	//    is exactly what sits behind the SAP prefix.
 	var deflated bytes.Buffer
-	w, err := flate.NewWriter(&deflated, flate.DefaultCompression)
+	w, err := flate.NewWriter(&deflated, CompressLevel)
 	if err != nil {
 		return nil, err
 	}

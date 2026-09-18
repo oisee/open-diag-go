@@ -648,29 +648,93 @@ func patchCellPath(container []byte, cols []Column, fn func(row, col int) int, d
 			continue
 		}
 
-		// Same decompressed length at this layer, new compressed length.
+		orig := dechunk(container, hdr)
+		// The GUI reads this blob positionally: a compressed-length prefix, then a
+		// chunked SAP-LZH stream, then the next sibling blob at a fixed offset.
+		// Shorten the stream and the prefix and the sibling offsets no longer agree,
+		// and the grid vanishes ("ALV не видно"); pad it with raw zeros to hold the
+		// offsets and the DEFLATE stream is left unterminated and the GUI hangs.
+		//
+		// So recompress to *exactly* the original compressed length with a valid,
+		// terminated DEFLATE stream (CompressExact pads with empty stored blocks and
+		// a final block), then re-chunk it into the original's framing byte-for-byte
+		// with only the payload swapped. Every length prefix, chunk marker and later
+		// blob offset stays put, and the stream is well-formed — the GUI cannot tell
+		// it apart from the original.
+		if recomp, ok := CompressExact(newDec, len(orig)); ok {
+			if newChunked, ok := rechunkAs(container, hdr, end, recomp); ok {
+				out := make([]byte, 0, len(container))
+				out = append(out, container[:hdr]...)
+				out = append(out, newChunked...)
+				out = append(out, container[end:]...)
+				return out, true // length prefix unchanged — nothing structural moved
+			}
+		}
+		// Fallback: exact-length encoding or reframing did not line up. Recompress
+		// freely, rewrite the length prefix, and pad the chunk stream to the span so
+		// at least the total value length is preserved.
 		recomp, err := Compress(newDec)
 		if err != nil {
 			return container, false
 		}
-		// Pad the re-chunked stream back to the original stream's exact byte
-		// span, so the total RFC_TR value length never changes and no outer
-		// size/offset the GUI keeps is disturbed. The length prefix still names
-		// the true compressed length, so a decoder reads that and ignores the
-		// zero padding beyond it.
 		newChunked := padChunkedTo(chunkRFC(recomp), end-hdr)
 		out := make([]byte, 0, len(container)-(end-hdr)+len(newChunked))
 		out = append(out, container[:hdr]...)
 		out = append(out, newChunked...)
 		out = append(out, container[end:]...)
-		// Rewrite the compressed-stream length the framing keeps in front of the
-		// header, so a decoder reading len(recomp) bytes sees the whole stream.
 		if hdr >= lzhCompLen {
 			binary.BigEndian.PutUint32(out[hdr-lzhCompLen:hdr], uint32(len(recomp)))
 		}
 		return out, true
 	}
 	return container, false
+}
+
+// rechunkAs rebuilds the chunked stream spanning container[hdr:end] using stream
+// as the new dechunked payload while preserving the original chunk framing
+// byte-for-byte: the same 8-byte header slot, every 03 05 marker and its length,
+// any lenient single-byte gaps, and the terminator. It reads stream in exactly
+// the order dechunk wrote it, so when len(stream) == len(dechunk(container[hdr:]))
+// the framing lengths still describe it and the rebuilt region is the same size
+// as the original. Returns nil,false if the lengths do not line up.
+func rechunkAs(container []byte, hdr, end int, stream []byte) ([]byte, bool) {
+	if hdr+headerSize > len(container) || len(stream) < headerSize || end > len(container) {
+		return nil, false
+	}
+	out := make([]byte, 0, end-hdr)
+	out = append(out, stream[:headerSize]...) // header slot
+	sp := headerSize                          // read cursor into stream
+	i := hdr + headerSize
+	for i < end {
+		if i+6 <= len(container) && bytes.Equal(container[i:i+4], rowMarker) {
+			n := int(binary.BigEndian.Uint16(container[i+4 : i+6]))
+			if sp+n > len(stream) {
+				return nil, false
+			}
+			out = append(out, rowMarker...)
+			out = append(out, container[i+4], container[i+5])
+			out = append(out, stream[sp:sp+n]...)
+			sp += n
+			i += 6 + n
+			continue
+		}
+		if i+4 <= len(container) && bytes.Equal(container[i:i+4], endMarker) {
+			out = append(out, container[i:end]...) // terminator and any trailer
+			i = end
+			break
+		}
+		// A lenient single byte, mirrored from dechunk so the cursor stays in step.
+		if sp >= len(stream) {
+			return nil, false
+		}
+		out = append(out, stream[sp])
+		sp++
+		i++
+	}
+	if sp != len(stream) || len(out) != end-hdr {
+		return nil, false
+	}
+	return out, true
 }
 
 // padChunkedTo grows a chunked stream to exactly target bytes by inserting
