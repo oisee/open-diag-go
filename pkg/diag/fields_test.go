@@ -21,3 +21,21 @@ func TestFieldIndexAndSet(t *testing.T) {
 		t.Errorf("set: %q", back[2].Value())
 	}
 }
+
+func TestFieldIndexDropdownAcrossPropertyBag(t *testing.T) {
+	atoms := []Atom{
+		{EType: AtomDropdown, Rest: []byte{0x00, 0x01}},
+		{EType: AtomXMLProperty, Text: "<Propertybag/>"},
+		FieldName(1, 20, "TRDIR-SUBC", 0),
+		InputField(2, 20, 10, "unrelated"),
+		{EType: AtomPushbutton, Text: "Save", Function: "=SAVE"},
+		FieldName(3, 20, "NOT-A-FIELD", 0),
+	}
+	got, byName := FieldIndex(EncodeDyntAtoms(atoms))
+	if got[0].TypeName() != "dropdown" || byName["TRDIR-SUBC"] != 0 {
+		t.Fatalf("dropdown and its name were not paired: %v", byName)
+	}
+	if _, ok := byName["NOT-A-FIELD"]; ok {
+		t.Fatalf("name crossed an unrelated button: %v", byName)
+	}
+}
