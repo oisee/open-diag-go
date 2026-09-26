@@ -2,7 +2,6 @@ package diag
 
 import (
 	"encoding/binary"
-	"fmt"
 )
 
 // This file describes the minimal server responses a rogue server sends to
@@ -175,16 +174,20 @@ func EncodeItems(items []Item) []byte {
 }
 
 // EncodeMessage turns a header and items into an NI payload, the inverse of
-// ParseMessage for a server frame (no DP header). Compression is not
-// implemented: DIAG accepts compress=0 and the capture shows uncompressed
-// responses, so a server can send everything uncompressed. Asking for
-// compression is an error rather than a silent lie.
+// ParseMessage for a server frame (no DP header). When compress is true,
+// it wraps the encoded items in a SAP-LZH stream and sets Compress=2.
 func EncodeMessage(h Header, items []Item, compress bool) ([]byte, error) {
-	if compress {
-		return nil, fmt.Errorf("diag: compressed encoding not implemented; send compress=0")
-	}
-	h.Compress = 0
 	body := EncodeItems(items)
+	if compress {
+		var err error
+		body, err = compressDIAGLZH(body)
+		if err != nil {
+			return nil, err
+		}
+		h.Compress = 2
+	} else {
+		h.Compress = 0
+	}
 	out := make([]byte, 0, HeaderLen+len(body))
 	out = append(out, h.Bytes()...)
 	out = append(out, body...)

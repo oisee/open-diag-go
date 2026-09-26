@@ -3,6 +3,7 @@ module github.com/oisee/open-diag-go
 go 1.26
 
 require (
+	github.com/klauspost/compress v1.19.2
 	github.com/oisee/open-rfc-go v0.0.0
 	github.com/oisee/vibing-steampunk v0.0.0
 )

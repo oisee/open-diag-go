@@ -76,9 +76,29 @@ func TestStatusFrameRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEncodeMessageCompressRefused(t *testing.T) {
-	frame := LogonScreen()
-	if _, err := EncodeMessage(frame.Header, frame.Items, true); err == nil {
-		t.Error("compressed encoding was accepted; it is not implemented")
+func TestEncodeMessageLZHRoundTrip(t *testing.T) {
+	items := []Item{
+		{Type: ItemAPPL, ID: 0x04, SID: 0x26, Value: []byte{0, 0, 0, 1}},
+		{Type: ItemAPPL, ID: 0x08, SID: 0x01, Value: bytes.Repeat([]byte("version-table"), 4000)},
+		{Type: ItemEOM},
+	}
+	header := Header{Mode: 1, ModeStat: 2}
+	payload, err := EncodeMessage(header, items, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := ParseMessage(payload, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Header.Mode != 1 || message.Header.ModeStat != 2 || message.Header.Compress != 2 {
+		t.Fatalf("compressed header changed: %s", message.Header)
+	}
+	sameItems(t, ParseItems(message.Body), items)
+}
+
+func TestEncodeMessageLZHRejectsEmptyBody(t *testing.T) {
+	if _, err := EncodeMessage(Header{}, nil, true); err == nil {
+		t.Fatal("empty SAP-LZH body was accepted")
 	}
 }
