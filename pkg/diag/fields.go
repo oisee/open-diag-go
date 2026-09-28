@@ -8,22 +8,27 @@ import "strings"
 // still submits it — read the atoms, set a value by name, and write them
 // back. This keeps every position, attribute and name the server sent.
 
-// FieldIndex pairs each field atom (input, output, checkbox, radio) with
-// the ABAP name in the name atom right after it, returning the parsed
-// atoms and name -> index of the field atom.
+// FieldIndex pairs each field atom (input, output, checkbox, radio, dropdown)
+// with the ABAP name in the following name atom, returning the parsed atoms
+// and name -> index of the field atom. XML property metadata may intervene;
+// another screen element ends the pairing.
 func FieldIndex(value []byte) ([]Atom, map[string]int) {
 	atoms, _ := ParseDyntAtoms(value)
 	byName := map[string]int{}
 	last := -1
 	for i, a := range atoms {
 		switch a.EType {
-		case AtomInputField, AtomOutputField, AtomCheckbox, AtomRadioButton:
+		case AtomInputField, AtomOutputField, AtomCheckbox, AtomRadioButton, AtomDropdown:
 			last = i
+		case AtomXMLProperty:
+			// The property bag describes the preceding field.
 		case AtomFieldName:
 			if last >= 0 {
 				byName[strings.ToUpper(a.Value())] = last
 				last = -1
 			}
+		default:
+			last = -1
 		}
 	}
 	return atoms, byName

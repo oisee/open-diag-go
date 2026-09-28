@@ -35,6 +35,7 @@ const (
 	AtomFieldName   = 0x72 // FNAME_1: the ABAP name of the element before it
 	AtomPushbutton  = 0x73 // PUSHBUTTON_2
 	AtomXMLProperty = 0x78 // XMLPROP: a <Propertybag> for the element before it
+	AtomDropdown    = 0x7e // observed A4H combo box; body layout is not fully decoded
 	AtomFrame       = 0x7f // FRAME_1: a box with a title
 	AtomCheckbox    = 0x80 // CHECKBUTTON_1
 	AtomRadioButton = 0x81 // RADIOBUTTON_1
@@ -63,7 +64,7 @@ const (
 )
 
 var atomNames = map[byte]string{
-	AtomFieldName: "name", AtomPushbutton: "button", AtomXMLProperty: "xmlprop", AtomFrame: "frame",
+	AtomFieldName: "name", AtomPushbutton: "button", AtomXMLProperty: "xmlprop", AtomDropdown: "dropdown", AtomFrame: "frame",
 	AtomCheckbox: "checkbox", AtomRadioButton: "radio", AtomInputField: "input", AtomOutputField: "output",
 	AtomLabel: "label",
 }
