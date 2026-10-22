@@ -18,9 +18,6 @@ import (
 	"github.com/oisee/open-diag-go/pkg/replay"
 )
 
-// demoSceneMS is how long each scene runs (wall clock), settable via -scene-ms.
-var demoSceneMS = 3000
-
 // ---- LED list-channel scenes -------------------------------------------------
 
 // ---- the logon backdrop ------------------------------------------------------
@@ -67,7 +64,7 @@ func loadLogonWrap(cap *replay.Capture, log func(string, ...any)) (*logonWrap, b
 // demoRenderer cycles the scenes on a wall clock, exactly as cmd/server's demo
 // mode does. wrapFrame is the counter (GV_TICKS) dynpro wrapper; listWrap is the
 // classic-list wrapper for the LED scenes.
-func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(string, ...any)) func(n int) []byte {
+func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, sceneMS int, log func(string, ...any)) func(n int) []byte {
 	f, ok := cap.ServerFrame(wrapFrame)
 	if !ok {
 		return func(int) []byte { return nil }
@@ -118,7 +115,7 @@ func demoRenderer(cap *replay.Capture, wrapFrame int, listWrap []byte, log func(
 	}
 
 	scenes := demo.Scenes()
-	def := time.Duration(demoSceneMS) * time.Millisecond
+	def := time.Duration(sceneMS) * time.Millisecond
 	if def <= 0 {
 		def = 3 * time.Second
 	}
