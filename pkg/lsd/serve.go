@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oisee/open-rfc-go/ni"
@@ -32,8 +33,18 @@ type Options struct {
 	Stub string
 	// Hold is how long a stub screen stays before the session ends itself,
 	// the way a real F8 session ends; zero is twelve seconds; a negative
-	// value waits for the window to be closed instead.
+	// value disables the hold timer (IdleTimeout still applies).
 	Hold time.Duration
+	// MaxPayloadLength bounds an incoming NI payload, excluding its four-byte
+	// prefix. Zero defaults to 1 MiB; values outside 1..2^32-1 are invalid.
+	MaxPayloadLength int
+	// MaxConnections caps active sockets, including those waiting after EOP.
+	// Zero defaults to 64; negative values are invalid.
+	MaxConnections int
+	// IdleTimeout bounds inactivity from acceptance, including before the
+	// first frame and after EOP. Zero defaults to 30 seconds; negative disables it.
+	// Reads and responses refresh it, including partial frames and NI controls.
+	IdleTimeout time.Duration
 	// List draws the stub in the classic list channel: colour, a border,
 	// and more to go wrong. The plain dynpro is the default.
 	List bool
@@ -46,6 +57,15 @@ type Options struct {
 }
 
 func (o Options) normalised() (Options, time.Duration) {
+	if o.MaxPayloadLength == 0 {
+		o.MaxPayloadLength = 1 << 20
+	}
+	if o.MaxConnections == 0 {
+		o.MaxConnections = 64
+	}
+	if o.IdleTimeout == 0 {
+		o.IdleTimeout = 30 * time.Second
+	}
 	if o.SID == "" {
 		o.SID = "LSD"
 	}
@@ -72,16 +92,30 @@ func (o Options) normalised() (Options, time.Duration) {
 }
 
 // Serve answers every SAP GUI that connects on ln until the context ends.
-// Closing the listener is how the context stops it.
+// Cancellation closes the listener and all active connections.
 func Serve(ctx context.Context, ln net.Listener, o Options) error {
 	o, hold := o.normalised()
-	demoSceneMS = o.SceneMS
-	logf = o.Log
+	if o.MaxPayloadLength < 0 || uint64(o.MaxPayloadLength) > uint64(^uint32(0)) || o.MaxConnections < 0 {
+		return fmt.Errorf("lsd: invalid payload or connection limit")
+	}
 	a, err := loadAsset()
 	if err != nil {
 		return fmt.Errorf("lsd: loading embedded show: %w", err)
 	}
 	a.setSID(o.SID)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	active := make(map[net.Conn]struct{})
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for c := range active {
+			c.Close()
+		}
+	}()
 	go func() {
 		<-ctx.Done()
 		ln.Close()
@@ -97,8 +131,21 @@ func Serve(ctx context.Context, ln net.Listener, o Options) error {
 			}
 			return err
 		}
+		mu.Lock()
+		if len(active) >= o.MaxConnections {
+			mu.Unlock()
+			c.Close()
+			continue
+		}
+		active[c] = struct{}{}
+		mu.Unlock()
 		conn++
-		go serve(ctx, c, a, o.Cadence, o.Stub, conn-1, !o.List, hold)
+		workers.Add(1)
+		go func(number int) {
+			defer workers.Done()
+			defer func() { mu.Lock(); delete(active, c); mu.Unlock() }()
+			serve(ctx, c, a, o, number, hold)
+		}(conn - 1)
 	}
 }
 
@@ -188,81 +235,101 @@ func instanceFromListen(listen string) int {
 // sends the opening scene and starts pushing frames on a timer; a later frame
 // freezes the show; the window-close (/i) gets the two-popup joke, then a clean
 // session end.
-// logf is where every line of every connection goes; Serve points it at
-// Options.Log, and the default is stderr as the command always wrote.
-var logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
-
-func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stub string, conn int, dynpro bool, hold time.Duration) {
+func serve(ctx context.Context, c net.Conn, a *asset, o Options, conn int, hold time.Duration) {
+	cadence, stub, dynpro := o.Cadence, o.Stub, !o.List
 	defer c.Close()
 	log := func(format string, x ...any) {
-		logf("[%s] "+format, append([]any{c.RemoteAddr()}, x...)...)
+		o.Log("[%s] "+format, append([]any{c.RemoteAddr()}, x...)...)
 	}
 	log("connected")
+
+	idleDeadline := time.Time{}
+	refreshIdle := func() {
+		if o.IdleTimeout > 0 {
+			idleDeadline = time.Now().Add(o.IdleTimeout)
+		}
+	}
+	refreshIdle()
 
 	send := func(what string, data []byte) error {
 		frameBytes, err := ni.EncodeFrame(data)
 		if err != nil {
 			return err
 		}
+		_ = c.SetWriteDeadline(idleDeadline)
 		if _, err := c.Write(frameBytes); err != nil {
 			return err
 		}
+		refreshIdle()
 		log("-> %s, %d bytes", what, len(data))
-		return err
+		return nil
 	}
-	// Say goodbye, then let the client hang up.
-	//
-	// Closing the socket ourselves the instant the EOP is written is a
-	// reset in the client's face: it is still reading, and what it gets is
-	// a broken connection rather than an ended session — which is what
-	// Eclipse reports as "the pipe is being closed". A system waits. So do
-	// we, briefly: read until the client goes or the grace runs out, and
-	// only then let the deferred Close run.
+	// Like socket.end(sessionEnd), send EOP and half-close the write side.
+	// Retain the connection slot until peer EOF, inactivity, or shutdown.
+	dec, _ := ni.NewFrameDecoder(o.MaxPayloadLength)
+	defer dec.Reset()
 	closeSession := func() {
 		h := diag.Header{ComFlag: diag.FlagTermEOC | diag.FlagTermEOP, MsgInfo: 0x01}
-		if fr, err := ni.EncodeFrame(h.Bytes()); err == nil {
-			_, _ = c.Write(fr)
+		if err := send("session end (EOP)", h.Bytes()); err != nil {
+			return
 		}
-		log("-> session end (EOP)")
-		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if cw, ok := c.(interface{ CloseWrite() error }); ok {
+			if err := cw.CloseWrite(); err != nil {
+				return
+			}
+		}
 		buf := make([]byte, 4096)
 		for {
-			if _, err := c.Read(buf); err != nil {
+			_ = c.SetReadDeadline(idleDeadline)
+			n, err := c.Read(buf)
+			if n > 0 {
+				refreshIdle()
+				if _, derr := dec.Push(buf[:n]); derr != nil {
+					return
+				}
+			}
+			if err != nil {
 				return
 			}
 		}
 	}
 
 	const screenFrame = 0 // the counter (GV_TICKS) wrapper is at capture index 0
-	rend := demoRenderer(a.cap, screenFrame, a.listWrap, log)
+	rend := demoRenderer(a.cap, screenFrame, a.listWrap, o.SceneMS, log)
 
-	dec, _ := ni.NewFrameDecoder(64 << 20)
 	buf := make([]byte, 64<<10)
 	var pushing chan struct{}
+	defer func() {
+		if pushing != nil {
+			close(pushing)
+		}
+	}()
+	var holdDeadline time.Time
+	armHold := func() {
+		if hold > 0 {
+			holdDeadline = time.Now().Add(hold)
+		}
+	}
 	seenFirst := false
 	jokeStep := 0
 
 	for {
+		deadline := idleDeadline
+		if !holdDeadline.IsZero() && (deadline.IsZero() || holdDeadline.Before(deadline)) {
+			deadline = holdDeadline
+		}
+		_ = c.SetReadDeadline(deadline)
 		n, err := c.Read(buf)
 		if err != nil {
-			// The hold expiring is not a failure, it is the session ending
-			// the way a real one ends. Measured on the A4H oracle: the
-			// server answers the last exchange, and about two seconds later
-			// sends the bare end-of-session frame on its own. The client
-			// never asks to close — the GUI shuts its own window and hands
-			// control back to Eclipse, which is why jumping in and out of
-			// SAP GUI there is clean. Our stub used to sit there until the
-			// window was closed by hand, and that path (/NEX from the
-			// client) is the one Eclipse complains about.
 			var ne net.Error
-			if stub != "" && hold > 0 && errors.As(err, &ne) && ne.Timeout() {
+			if errors.As(err, &ne) && ne.Timeout() && !holdDeadline.IsZero() &&
+				!time.Now().Before(holdDeadline) && (idleDeadline.IsZero() || holdDeadline.Before(idleDeadline)) {
 				log("stub: shown for %s, ending the session", hold)
 				closeSession()
-				return
 			}
-			log("closed: %v", err)
 			return
 		}
+		refreshIdle()
 		frames, err := dec.Push(buf[:n])
 		if err != nil {
 			log("ni: %v", err)
@@ -338,17 +405,13 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 				if !dynpro {
 					if out := listStubFrame(a.listWrap, stubListSegments(stub, conn), first); out != nil {
 						_ = send("stub "+stub+" (list)", out)
-						if hold > 0 {
-							_ = c.SetReadDeadline(time.Now().Add(hold))
-						}
+						armHold()
 						continue
 					}
 				}
 				if out := staticRespondWrap(a.cap, screenFrame, stubScreen(stub, conn)); out != nil {
 					_ = send("stub "+stub+" (dynpro)", out)
-					if hold > 0 {
-						_ = c.SetReadDeadline(time.Now().Add(hold))
-					}
+					armHold()
 				}
 				continue
 			}
