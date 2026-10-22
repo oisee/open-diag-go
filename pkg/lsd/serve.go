@@ -24,6 +24,9 @@ import (
 
 // Options is what a stub needs besides a listener.
 type Options struct {
+	// SID names the system in the screen identity fields; empty defaults to LSD.
+	// Values are space-padded or truncated to each field's wire width.
+	SID string
 	// Stub names the still screen: tape (the default) | boot | c64 | guru |
 	// rotate; an empty string plays the light-show instead.
 	Stub string
@@ -43,6 +46,9 @@ type Options struct {
 }
 
 func (o Options) normalised() (Options, time.Duration) {
+	if o.SID == "" {
+		o.SID = "LSD"
+	}
 	hold := o.Hold
 	switch {
 	case hold == 0:
@@ -75,6 +81,7 @@ func Serve(ctx context.Context, ln net.Listener, o Options) error {
 	if err != nil {
 		return fmt.Errorf("lsd: loading embedded show: %w", err)
 	}
+	a.setSID(o.SID)
 	go func() {
 		<-ctx.Done()
 		ln.Close()
@@ -103,9 +110,14 @@ func Instance(listen string) int { return instanceFromListen(listen) }
 func LocalIPv4() string { return localIPv4() }
 
 // Banner prints the connection a SAP GUI needs, as the command does.
-func Banner(ip string, inst int, listen string) { printBanner(ip, inst, listen) }
+// The optional SID defaults to LSD.
+func Banner(ip string, inst int, listen string, sid ...string) { printBanner(ip, inst, listen, sid...) }
 
-func printBanner(ip string, inst int, listen string) {
+func printBanner(ip string, inst int, listen string, sid ...string) {
+	systemID := "LSD"
+	if len(sid) > 0 && sid[0] != "" {
+		systemID = sid[0]
+	}
 	port := listen
 	if strings.HasPrefix(port, ":") {
 		port = port[1:]
@@ -120,7 +132,7 @@ func printBanner(ip string, inst int, listen string) {
 	fmt.Println(`In SAP GUI, add a connection → "Custom Application Server":`)
 	fmt.Printf("   Application Server:  %s\n", ip)
 	fmt.Printf("   Instance Number:     %02d\n", inst)
-	fmt.Println("   System ID:           LSD")
+	fmt.Printf("   System ID:           %s\n", systemID)
 	fmt.Printf("Then connect (or use the raw sapgui host %s port %s).\n", ip, port)
 	fmt.Println()
 }
@@ -275,18 +287,16 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 			// and we answered a frame we had not understood with a screen.
 			// That is what took SAP GUI down a few frames later.
 			first := !seenFirst
-			seenFirst = true
-			m, perr := diag.ParseMessage(payload, first && len(payload) > diag.DPHeaderLen)
-			items := []diag.Item(nil)
-			if perr == nil {
-				items = diag.ParseItems(m.Body)
-				log("<- client frame, %d bytes, %d items", len(payload), len(items))
-			} else {
-				log("<- client frame, %d bytes (%v)", len(payload), perr)
+			items, perr := parseClientMessage(payload, first)
+			if perr != nil {
+				log("protocol-error: %v", perr)
+				return // JS destroys the socket without an error frame or screen.
 			}
+			seenFirst = true
+			log("<- client frame, %d bytes, %d items", len(payload), len(items))
 
 			// Window close: the joke, then a clean end.
-			if stub == "" && perr == nil && jokeStep == 0 && isClose(items) {
+			if stub == "" && jokeStep == 0 && isClose(items) {
 				if pushing != nil {
 					close(pushing)
 					pushing = nil
@@ -318,7 +328,7 @@ func serve(ctx context.Context, c net.Conn, a *asset, cadence time.Duration, stu
 			// system with no dialog programs says when something lands on
 			// its dispatcher — the window is a screen, not a blank.
 			if stub != "" {
-				if perr == nil && isExit(items) {
+				if isExit(items) {
 					closeSession()
 					return
 				}
@@ -403,4 +413,37 @@ func push(ctx context.Context, c net.Conn, render func(n int) []byte, cadence ti
 			log("-> pushed frame %d (%d bytes; %d sent, %d skipped)", n, len(data), sent, skipped)
 		}
 	}
+}
+
+// parseClientMessage applies the JS tape server's admission rules. ParseItems is
+// deliberately tolerant for capture inspection; Raw items are errors on a server.
+func parseClientMessage(payload []byte, first bool) ([]diag.Item, error) {
+	if first {
+		if len(payload) < diag.DPHeaderLen+diag.HeaderLen {
+			return nil, fmt.Errorf("short DIAG hello: %d bytes", len(payload))
+		}
+		if !bytes.Equal(payload[:4], []byte{0xff, 0xff, 0xff, 0xff}) {
+			return nil, fmt.Errorf("DIAG hello has no dispatcher route prefix")
+		}
+		if payload[diag.DPHeaderLen+1]&diag.FlagTermINI == 0 {
+			return nil, fmt.Errorf("DIAG hello has no INI flag")
+		}
+		if payload[diag.DPHeaderLen+7] != 0 {
+			return nil, fmt.Errorf("compressed DIAG hello is unsupported")
+		}
+	}
+	m, err := diag.ParseMessage(payload, first)
+	if err != nil {
+		return nil, err
+	}
+	items := diag.ParseItems(m.Body)
+	if first && len(items) == 0 {
+		return nil, fmt.Errorf("DIAG hello has no items")
+	}
+	for _, item := range items {
+		if item.Status == diag.Raw {
+			return nil, fmt.Errorf("malformed DIAG item at offset %d", item.Offset)
+		}
+	}
+	return items, nil
 }

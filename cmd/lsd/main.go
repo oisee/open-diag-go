@@ -19,6 +19,7 @@ import (
 )
 
 func main() {
+	sid := flag.String("sid", "LSD", "system ID shown to the client")
 	listen := flag.String("listen", ":3232", "address SAP GUI connects to; the low two digits are the SAP instance number")
 	sceneMS := flag.Int("scene-ms", 3000, "how long each scene runs, in milliseconds (wall clock)")
 	hold := flag.Duration("stub-hold", 12*time.Second, "how long a stub screen stays before the session ends itself; 0 waits for the user")
@@ -27,7 +28,7 @@ func main() {
 	cadenceMS := flag.Int("push-ms", 80, "frame cadence in milliseconds (floored at 60)")
 	flag.Parse()
 
-	lsd.Banner(lsd.LocalIPv4(), lsd.Instance(*listen), *listen)
+	lsd.Banner(lsd.LocalIPv4(), lsd.Instance(*listen), *listen, *sid)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	ln, err := net.Listen("tcp", *listen)
@@ -40,7 +41,7 @@ func main() {
 		h = -1 // the command's 0 means "wait for the user"; the library's zero is the default
 	}
 	fmt.Fprintf(os.Stderr, "lsd: listening on %s; stub %q; scene %d ms\n", *listen, *stub, *sceneMS)
-	if err := lsd.Serve(ctx, ln, lsd.Options{Stub: *stub, Hold: h, List: *useList, SceneMS: *sceneMS, Cadence: time.Duration(*cadenceMS) * time.Millisecond}); err != nil {
+	if err := lsd.Serve(ctx, ln, lsd.Options{SID: *sid, Stub: *stub, Hold: h, List: *useList, SceneMS: *sceneMS, Cadence: time.Duration(*cadenceMS) * time.Millisecond}); err != nil {
 		fmt.Fprintln(os.Stderr, "lsd:", err)
 		os.Exit(1)
 	}
