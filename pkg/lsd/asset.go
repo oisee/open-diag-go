@@ -9,6 +9,7 @@ import (
 
 	_ "embed"
 
+	"github.com/oisee/open-diag-go/pkg/diag"
 	"github.com/oisee/open-diag-go/pkg/replay"
 )
 
@@ -71,4 +72,28 @@ func loadAsset() (*asset, error) {
 		popup:    frames[3],
 	}
 	return a, nil
+}
+
+// setSID updates every shell used by the still screens, show and popups. Assets
+// are loaded per Serve, so listeners with different identities share no bytes.
+func (a *asset) setSID(sid string) {
+	patch := func(data []byte) {
+		m, err := diag.ParseMessage(data, false)
+		if err != nil {
+			return
+		}
+		for _, item := range diag.ParseItems(m.Body) {
+			if item.Type == diag.ItemAPPL && item.ID == 0x06 && (item.SID == 0x23 || item.SID == 0x24) {
+				for i := range item.Value {
+					item.Value[i] = ' '
+				}
+				copy(item.Value, sid)
+			}
+		}
+	}
+	for _, f := range a.cap.Server {
+		patch(f.Data)
+	}
+	patch(a.listWrap)
+	patch(a.popup)
 }

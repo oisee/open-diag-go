@@ -51,6 +51,19 @@ go build ./cmd/tap ./cmd/lens
 ./lens captures/probe.jsonl                                                  # what went by, item by item
 ```
 
+## Standalone DIAG stub
+
+`go run ./cmd/lsd -stub tape -sid QRS` serves the tape screen with system ID
+`QRS`. Library callers set `lsd.Options{Stub: "tape", SID: "QRS"}` when calling
+`lsd.Serve`. An empty SID keeps the default `LSD`; identity fields retain their
+wire widths, with space padding or truncation as needed. The SID applies to
+all embedded screen, list, logon and popup shells.
+
+The first non-keepalive NI frame must contain a 200-byte dispatcher header
+starting with `ffffffff`, an uncompressed DIAG header with INI set, and at least
+one complete, recognized item. Malformed hellos close the connection immediately
+without a screen or error frame, matching open-steamgate's JS tape server.
+
 ## License & disclaimer
 
 MIT — see [LICENSE](LICENSE).
